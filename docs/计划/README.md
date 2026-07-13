@@ -63,7 +63,7 @@
 - `/study` 的任务驱动学习主循环。
 - 出题、判题、讨论、总结四类 Agent 图。
 - 真实 pi 核心 probe。
-- 77 项自动测试、类型检查、文档链接检查和 extension smoke。
+- 85 项自动测试、类型检查、文档链接检查和 extension smoke。
 - 四类 Agent 图的隔离 in-memory Session 执行器、专用 QuestionView/TUI gateway 和确定性 Attempt outcome。
 - 三种 mode 的代码级目标选择与材料门禁、固定难度 rubric、题目级 target/scope、Session `scopeHistory` 和受控 `SessionEvidence`。
 
@@ -119,13 +119,14 @@ P0、P1 和 P2 的产品功能人工验收均已通过。原 P1 C 的跨范围 r
 
 ### P3：手动学习画像
 
-预计：2～3 个开发轮次。
+状态：代码、自动测试和真实模型 probe 完成，等待 1 个真实 Pi 人工验收轮次。
 
-1. 在 Profile 管理入口列出未消费的 pending 学习批次。
-2. 建立学习画像 Agent 图和严格输出校验。
-3. 用户确认后写入 `learning_profile.json`。
-4. 仅在画像成功写入后归档被消费批次。
-5. 验证失败、取消和部分移动回滚。
+1. [X] `/study-profile` 列出未消费的 completed/interrupted pending 学习批次。
+2. [X] 建立学习画像 Agent 图、输出 schema 和长度校验。
+3. [X] 由代码合并累计统计与已有画像，用户确认后写入 `learning_profile.json`。
+4. [X] 仅在画像成功写入后归档被消费批次。
+5. [X] 自动测试覆盖 Agent 失败、用户取消和多批次部分移动回滚。
+6. [ ] 真实 Pi 验证候选预览、确认写入、pending 归档和再次执行无记录提示。
 
 退出条件：用户可以手动生成画像；失败时 pending 记录保持不变。
 
@@ -180,9 +181,9 @@ P0、P1 和 P2 的产品功能人工验收均已通过。原 P1 C 的跨范围 r
 
 ## 接下来三轮
 
-1. 建立手动学习画像命令，列出可消费的 completed/interrupted pending 批次。
-2. 建立学习画像 Agent 图、严格输出校验和用户确认步骤。
-3. 成功写入画像后归档被消费批次，随后进行真实 Pi 人工验收。
+1. 用户执行 P3 简短清单，确认生成画像并归档当前未消费记录。
+2. 若通过，冻结 P3，开始 Markdown/txt 原始资料盘点和构建 job/checkpoint。
+3. 随后建立 canonical Profile 自动生成图和质量门禁。
 
 在这三轮完成前，不并行启动 Profile 构建图，避免学习主链路仍不稳定时扩大变更面。
 

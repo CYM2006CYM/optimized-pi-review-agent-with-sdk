@@ -6,6 +6,7 @@ import { resolveStudyDataRoot } from "../src/config/data-paths.js";
 import type { Attempt, StudySession } from "../src/domain/types.js";
 import {
   asGradeResult,
+  asLearningProfileCandidate,
   asReviewQuestion,
   createStudyWalkingSkeletonGraphs,
   difficultyFrom,
@@ -15,6 +16,7 @@ import { ProfileFamilyRepository } from "../src/repositories/profile-family-repo
 import { buildDiscussionAgentInput } from "../src/application/study-discussion.js";
 import { buildSessionEvidence } from "../src/domain/session-evidence.js";
 import { DIFFICULTY_POLICIES } from "../src/domain/study-policy.js";
+import { buildLearningProfileEvidence } from "../src/domain/learning-profile-evidence.js";
 
 export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<void> {
   const dataRoot = resolveStudyDataRoot();
@@ -35,6 +37,7 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
   loop.registerGraph(graphs.gradeAnswer);
   loop.registerGraph(graphs.discussQuestion);
   loop.registerGraph(graphs.summarizeSession);
+  loop.registerGraph(graphs.updateLearningProfile);
   pi.registerCommand("study-sdk-probe", {
     description: "开发期真实 Agent Run 闭环探针",
     handler: async () => {
@@ -138,6 +141,15 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       const endedAt = new Date().toISOString();
       session = { ...session, status: "completed", updatedAt: endedAt, endedAt };
       await memory.completeSession("demo-review", batch.batchId, session, `${summaryMarkdown}\n`);
+      const completedBatch = await memory.loadPendingBatch("demo-review", batch.batchId);
+      const profiled = await loop.executeGraph(graphs.updateLearningProfile, {
+        source: "command",
+        params: {
+          evidence: buildLearningProfileEvidence("demo-review", null, [completedBatch]),
+        },
+      });
+      if (profiled.status !== "ok") throw new Error(`Learning Profile graph ended with ${profiled.status}`);
+      asLearningProfileCandidate(profiled.result);
     },
   });
 }

@@ -19,6 +19,8 @@ import {
 export interface PrivateMemoryRepositoryOptions {
   dataRoot?: string;
   now?: () => Date;
+  /** @internal 测试归档事务回滚；生产默认使用 node:fs rename。 */
+  renamePath?: (from: string, to: string) => Promise<void>;
 }
 
 export interface PendingLearningRecordBatch extends LearningRecordBatch {
@@ -59,11 +61,16 @@ function validateLearningProfile(profile: LearningProfile, subjectId: string): v
   for (const [name, value] of Object.entries({
     weak_points: profile.weak_points,
     strengths: profile.strengths,
+    unverified_topics: profile.unverified_topics,
+    recommendations: profile.recommendations,
     recent_sessions: profile.recent_sessions,
   })) {
     if (!Array.isArray(value) || value.some((item) => typeof item !== "string")) {
       throw new Error(`Learning Profile ${name} must be a string array`);
     }
+  }
+  if (typeof profile.profile_summary !== "string" || profile.profile_summary.trim() === "") {
+    throw new Error("Learning Profile profile_summary must be non-empty");
   }
   if (Number.isNaN(Date.parse(profile.updated_at))) {
     throw new Error("Learning Profile updated_at must be an ISO date");
@@ -74,11 +81,13 @@ export class PrivateMemoryRepository {
   readonly dataRoot: string;
   readonly familiesRoot: string;
   private readonly now: () => Date;
+  private readonly renamePath: (from: string, to: string) => Promise<void>;
 
   constructor(options: PrivateMemoryRepositoryOptions = {}) {
     this.dataRoot = resolveStudyDataRoot(options.dataRoot);
     this.familiesRoot = profileFamiliesRoot(this.dataRoot);
     this.now = options.now ?? (() => new Date());
+    this.renamePath = options.renamePath ?? rename;
   }
 
   private userDirectory(subjectId: string): string {
@@ -247,12 +256,12 @@ export class PrivateMemoryRepository {
     try {
       for (const batch of batches) {
         const destination = await this.uniqueArchivedBatchPath(subjectId, batch.batchId);
-        await rename(batch.directory, destination);
+        await this.renamePath(batch.directory, destination);
         moved.push({ from: batch.directory, to: destination });
       }
     } catch (error) {
       for (const item of moved.reverse()) {
-        if (await pathExists(item.to)) await rename(item.to, item.from);
+        if (await pathExists(item.to)) await this.renamePath(item.to, item.from);
       }
       if (previousProfile === undefined) await rm(profilePath, { force: true });
       else await writeTextAtomic(profilePath, previousProfile);

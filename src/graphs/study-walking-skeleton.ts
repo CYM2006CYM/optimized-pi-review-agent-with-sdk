@@ -7,6 +7,7 @@ import type {
   Node,
 } from "pi-loop-graph-sdk";
 import type { DifficultyLevel, GradeResult, ReviewQuestion } from "../domain/types.js";
+import type { LearningProfileCandidate } from "../domain/learning-profile-evidence.js";
 import { loadActiveStudyTargetContext, type StudyTargetKind } from "../domain/study-profile.js";
 import { getDifficultyPolicy, getReviewModePolicy } from "../domain/study-policy.js";
 import type { ProfileFamilyRepository } from "../repositories/profile-family-repository.js";
@@ -81,6 +82,19 @@ const discussionOutputSchema = {
     lingering_questions: { type: "array", items: { type: "string" } },
   },
   required: ["reply", "clarified_points", "lingering_questions"],
+  additionalProperties: false,
+};
+
+const learningProfileOutputSchema = {
+  type: "object",
+  properties: {
+    profile_summary: { type: "string" },
+    weak_points: { type: "array", items: { type: "string" } },
+    strengths: { type: "array", items: { type: "string" } },
+    unverified_topics: { type: "array", items: { type: "string" } },
+    recommendations: { type: "array", items: { type: "string" } },
+  },
+  required: ["profile_summary", "weak_points", "strengths", "unverified_topics", "recommendations"],
   additionalProperties: false,
 };
 
@@ -169,6 +183,21 @@ export function validateDiscussionResult(result: Record<string, unknown>): Compl
   return { isValid: true };
 }
 
+export function validateLearningProfileResult(result: Record<string, unknown>): CompletionValidationResult {
+  if (!validString(result.profile_summary)) return { isValid: false, reason: "profile_summary 不能为空" };
+  if (String(result.profile_summary).length > 2_000) return { isValid: false, reason: "profile_summary 过长" };
+  for (const key of ["weak_points", "strengths", "unverified_topics", "recommendations"]) {
+    const values = result[key];
+    if (!Array.isArray(values) || values.some((item) => typeof item !== "string" || item.trim() === "")) {
+      return { isValid: false, reason: `${key} 必须是非空字符串数组` };
+    }
+    if (values.length > 20 || values.some((item) => item.length > 200)) {
+      return { isValid: false, reason: `${key} 超出画像长度限制` };
+    }
+  }
+  return { isValid: true };
+}
+
 function finishEdge(from: string): Edge {
   return {
     id: `${from}_to_end`,
@@ -194,6 +223,7 @@ export interface StudyWalkingSkeletonGraphs {
   gradeAnswer: Graph;
   discussQuestion: Graph;
   summarizeSession: Graph;
+  updateLearningProfile: Graph;
 }
 
 export function createStudyWalkingSkeletonGraphs(
@@ -357,7 +387,43 @@ export function createStudyWalkingSkeletonGraphs(
     routing: { summarize_session: { nodeId: "summarize_session", edges: [finishEdge("summarize_session")], router: { kind: "first-match" } } },
   };
 
-  return { generateQuestion, gradeAnswer, discussQuestion, summarizeSession };
+  const learningProfileNode: Node = {
+    kind: "code",
+    id: "update_learning_profile",
+    subGoal: "根据用户选中的学习记录更新长期学习画像候选",
+    tools: [],
+    execute: createAgentExecute({
+      outputSchema: learningProfileOutputSchema,
+      validateCompletion: validateLearningProfileResult,
+      prompt: (input) => `根据代码提供的 LearningProfileEvidence 生成中文长期学习画像候选。
+
+规则：
+1. 只使用 existing_profile、selected_batches 及其中的 summary_excerpt/session_evidence，不读取或猜测原始回答。
+2. strengths 只能来自 mastery_evidence；unverified_topics 表示尚未获得掌握证据，不能自动等同于 weak_points。
+3. weak_points 只能保留 existing_profile 已有项，或由多个已选会话中的重复订正/重复未验证证据支持；单次放弃不能直接定性为薄弱。
+4. profile_summary 概括累计画像，不写心理、性格、信心、习惯或长期能力猜测。
+5. recommendations 必须具体但保守，优先使用 evidence 中已经出现的范围、目标、知识点和有效难度。
+6. 不要计算累计题数、正确数或正确率，这些字段由代码确定。
+7. 完成后调用 __graph_complete__，严格提交五个字段。
+
+LearningProfileEvidence：${JSON.stringify(input.data.evidence)}`,
+    }),
+  };
+  const updateLearningProfile: Graph = {
+    id: "study_update_learning_profile",
+    goal: "从用户选中的学习记录生成长期学习画像候选",
+    entries: [singleNodeEntry("update_learning_profile")],
+    nodes: { update_learning_profile: learningProfileNode },
+    routing: {
+      update_learning_profile: {
+        nodeId: "update_learning_profile",
+        edges: [finishEdge("update_learning_profile")],
+        router: { kind: "first-match" },
+      },
+    },
+  };
+
+  return { generateQuestion, gradeAnswer, discussQuestion, summarizeSession, updateLearningProfile };
 }
 
 export function asReviewQuestion(result: Record<string, unknown>): ReviewQuestion & { question_id: string } {
@@ -370,6 +436,12 @@ export function asGradeResult(result: Record<string, unknown>): GradeResult {
   const validation = validateGradeResult(result);
   if (!validation.isValid) throw new Error(validation.reason);
   return result as unknown as GradeResult;
+}
+
+export function asLearningProfileCandidate(result: Record<string, unknown>): LearningProfileCandidate {
+  const validation = validateLearningProfileResult(result);
+  if (!validation.isValid) throw new Error(validation.reason);
+  return result as unknown as LearningProfileCandidate;
 }
 
 export function difficultyFrom(value: string): DifficultyLevel {

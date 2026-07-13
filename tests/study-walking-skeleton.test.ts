@@ -8,6 +8,7 @@ import {
   validateGradeResult,
   validateQuestionResult,
   validateQuestionResultForRequest,
+  validateLearningProfileResult,
   validateSummaryResult,
 } from "../src/graphs/study-walking-skeleton.js";
 import { ProfileFamilyRepository } from "../src/repositories/profile-family-repository.js";
@@ -36,6 +37,7 @@ describe("学习 walking skeleton 图", () => {
     expect(graphs.gradeAnswer.nodes.grade_answer?.kind).toBe("code");
     expect(graphs.discussQuestion.nodes.discuss_question?.kind).toBe("code");
     expect(graphs.summarizeSession.nodes.summarize_session?.kind).toBe("code");
+    expect(graphs.updateLearningProfile.nodes.update_learning_profile?.kind).toBe("code");
     expect(Object.keys(graphs.generateQuestion.routing)).toEqual(["prepare_question_context", "generate_question"]);
   });
 
@@ -153,6 +155,20 @@ describe("学习 walking skeleton 图", () => {
       unverified_topics: [],
       recommendations: [],
     }).isValid).toBe(true);
+    expect(validateLearningProfileResult({
+      profile_summary: "累计画像",
+      weak_points: [],
+      strengths: ["主动回忆"],
+      unverified_topics: [],
+      recommendations: ["继续练习"],
+    }).isValid).toBe(true);
+    expect(validateLearningProfileResult({
+      profile_summary: "",
+      weak_points: [],
+      strengths: [],
+      unverified_topics: [],
+      recommendations: [],
+    }).isValid).toBe(false);
   });
 
   it("判题 Agent 被明确限制为只判 submitted_answer，不能改写成放弃", async () => {

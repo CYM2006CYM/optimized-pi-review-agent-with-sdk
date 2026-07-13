@@ -2,6 +2,7 @@ import { mkdir } from "node:fs/promises";
 import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { createJsonlTraceSink } from "pi-loop-graph-sdk";
+import { LearningProfileController } from "../application/learning-profile-controller.js";
 import { StudySessionController } from "../application/study-session-controller.js";
 import { resolveStudyDataRoot } from "../config/data-paths.js";
 import { createIsolatedGraphExecutor } from "../graphs/isolated-graph-executor.js";
@@ -18,22 +19,24 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
   const graphs = createStudyWalkingSkeletonGraphs(profiles);
   const traceSink = createJsonlTraceSink(resolve(traceDirectory, "loop-graph-lifecycle.jsonl"));
 
-  const controllerFor = (ctx: ExtensionCommandContext): StudySessionController => {
+  const executorFor = (ctx: ExtensionCommandContext) => {
     let executeGraph: ReturnType<typeof createIsolatedGraphExecutor> | undefined;
-    return new StudySessionController({
-      profiles,
-      memory,
-      graphs,
-      executeGraph: (graph, params) => {
-        executeGraph ??= createIsolatedGraphExecutor(ctx, {
-          traceSink,
-          limits: { rootMaxSteps: 10, agentRunTimeoutMs: 300_000 },
-        });
-        return executeGraph(graph, params);
-      },
-      ui: ctx.ui,
-    });
+    return (graph: Parameters<ReturnType<typeof createIsolatedGraphExecutor>>[0], params: Record<string, unknown>) => {
+      executeGraph ??= createIsolatedGraphExecutor(ctx, {
+        traceSink,
+        limits: { rootMaxSteps: 10, agentRunTimeoutMs: 300_000 },
+      });
+      return executeGraph(graph, params);
+    };
   };
+
+  const controllerFor = (ctx: ExtensionCommandContext): StudySessionController => new StudySessionController({
+    profiles,
+    memory,
+    graphs,
+    executeGraph: executorFor(ctx),
+    ui: ctx.ui,
+  });
 
   pi.registerCommand("study", {
     description: "启动一次任务驱动学习会话",
@@ -58,6 +61,27 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
         return;
       }
       await controllerFor(ctx).recoverRunningSession();
+    },
+  });
+
+  pi.registerCommand("study-profile", {
+    description: "从未消费学习记录生成或更新用户学习画像",
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("当前 Agent 仍在工作，请稍后再更新学习画像。", "warning");
+        return;
+      }
+      if (!ctx.model) {
+        ctx.ui.notify("请先选择可用模型再生成学习画像。", "warning");
+        return;
+      }
+      await new LearningProfileController({
+        profiles,
+        memory,
+        graphs,
+        executeGraph: executorFor(ctx),
+        ui: ctx.ui,
+      }).run(args);
     },
   });
 

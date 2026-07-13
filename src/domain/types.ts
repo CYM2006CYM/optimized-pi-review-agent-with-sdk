@@ -195,8 +195,11 @@ export interface LearningProfile {
   total_questions: number;
   total_correct: number;
   accuracy: number;
+  profile_summary: string;
   weak_points: string[];
   strengths: string[];
+  unverified_topics: string[];
+  recommendations: string[];
   recent_sessions: string[];
 }
 

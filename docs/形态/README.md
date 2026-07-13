@@ -79,7 +79,18 @@ profile_families/{subjectId}/
 - 学习画像成功写入后才把选中的 pending 批次移入 archived。
 - 画像写入或移动失败时回滚，避免提前消费学习记录。
 
-学习画像的 Agent 生成入口尚未实现；当前完成的是可信存储和消费事务。
+学习画像的可信存储、消费事务和手动 Agent 生成入口均已实现。
+
+### 手动学习画像
+
+`/study-profile` 当前支持：
+
+- 选择 active Profile，并列出该科目尚未消费的 completed/interrupted 学习记录。
+- 选择一条记录或全部可用记录；running 会话不会进入画像输入。
+- 画像 Agent 只接收会话总结摘录、受控 `SessionEvidence` 和已有画像，不接收原始答案、参考答案、解析或来源。
+- 累计题数、累计正确数、正确率、近期 session 列表由代码合并，Agent 只生成总体概况、掌握证据、薄弱点、待验证主题和建议。
+- 用户先看到画像候选预览；只有明确确认后才写入 `_user/learning_profile.json` 并归档被消费批次。
+- 用户取消、Agent 失败或多批次移动中途失败时，原画像和 pending 记录保持不变；部分移动会回滚。
 
 ### 任务驱动学习
 
@@ -107,15 +118,16 @@ prepare_question_context
 → grade_answer
 → discuss_question
 → summarize_session
+→ update_learning_profile
 ```
 
 验证结果：
 
-- 四张图均到达 `END`。
+- 五张图均到达 `END`。
 - 会话最终为 `completed`。
 - 磁盘存在一份题目记录和非空总结。
 - 出题结果字段类型不合格时，completion validator 成功驳回，Agent 订正后继续。
-- P1 集成后再次运行真实 probe：4 个带输出契约的 Agent Run 全部形成被接受候选，四张图均为 `ok`，会话、attempt 和 summary 正常落盘。
+- P3 集成后再次运行真实 probe：5 个带输出契约的 Agent Run 全部形成被接受候选，五张图均为 `ok`，会话、attempt、summary 和学习画像候选均正常生成。
 
 ### 第一轮人工 `/study` E2E
 
@@ -184,7 +196,7 @@ P2 真实 Pi 人工测试已通过：最短 `/study` 能正常完成；原 P1 C 
 ## 当前自动验证
 
 ```text
-npm test                    77/77
+npm test                    85/85
 npm run typecheck           通过
 npm run check:docs          通过
 npm run smoke:extension     真实 pi/RPC 加载通过
@@ -193,7 +205,7 @@ npm run probe:sdk-agent     真实 pi + 模型核心闭环通过
 
 ## 尚未完成或尚未验收
 
-- 用户手动触发的学习画像生成图。
+- `/study-profile` 的真实 Pi 确认、写入和归档人工验收。
 - 从 Markdown/txt 自动构建完整 canonical Profile。
 - 基于 active 的资料包语义修订和质量审查图。
 - 10 题以上长会话、compaction、取消、超时和第二模型提供方验证。

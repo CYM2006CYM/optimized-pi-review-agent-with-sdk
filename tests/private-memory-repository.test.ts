@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, rm } from "node:fs/promises";
+import { mkdtemp, readdir, rename, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -133,8 +133,11 @@ describe("PrivateMemoryRepository", () => {
       total_questions: 0,
       total_correct: 0,
       accuracy: 0,
+      profile_summary: "暂无长期画像。",
       weak_points: [],
       strengths: [],
+      unverified_topics: [],
+      recommendations: [],
       recent_sessions: ["session-1"],
     };
 
@@ -159,8 +162,11 @@ describe("PrivateMemoryRepository", () => {
       total_questions: 0,
       total_correct: 0,
       accuracy: 0,
+      profile_summary: "无效画像",
       weak_points: [],
       strengths: [],
+      unverified_topics: [],
+      recommendations: [],
       recent_sessions: [],
     } satisfies LearningProfile;
 
@@ -168,6 +174,57 @@ describe("PrivateMemoryRepository", () => {
       "subject_id must be demo-review",
     );
     expect((await repository.listPendingBatches("demo-review")).map((item) => item.batchId)).toEqual([batch.batchId]);
+    expect(await repository.loadLearningProfile("demo-review")).toBeNull();
+  });
+
+  it("多批次归档中途失败时恢复已移动记录和旧画像", async () => {
+    let forwardMoves = 0;
+    repository = new PrivateMemoryRepository({
+      dataRoot,
+      now: () => new Date("2026-07-13T08:09:10.000Z"),
+      async renamePath(from, to) {
+        if (/[\\/]pending[\\/]/u.test(from)) {
+          forwardMoves += 1;
+          if (forwardMoves === 2) throw new Error("simulated archive failure");
+        }
+        await rename(from, to);
+      },
+    });
+    const first = await repository.createPendingBatch(runningSession);
+    const secondSession = { ...runningSession, sessionId: "session-2" };
+    const second = await repository.createPendingBatch(secondSession);
+    await repository.interruptSession("demo-review", first.batchId, {
+      ...runningSession,
+      status: "interrupted",
+      endedAt: "2026-07-13T08:10:00.000Z",
+    });
+    await repository.interruptSession("demo-review", second.batchId, {
+      ...secondSession,
+      status: "interrupted",
+      endedAt: "2026-07-13T08:10:00.000Z",
+    });
+    const profile: LearningProfile = {
+      subject_id: "demo-review",
+      updated_at: "2026-07-13T08:10:00.000Z",
+      total_questions: 0,
+      total_correct: 0,
+      accuracy: 0,
+      profile_summary: "回滚测试画像",
+      weak_points: [],
+      strengths: [],
+      unverified_topics: [],
+      recommendations: [],
+      recent_sessions: [],
+    };
+
+    await expect(repository.saveLearningProfileAndArchive(
+      "demo-review",
+      profile,
+      [first.batchId, second.batchId],
+    )).rejects.toThrow("simulated archive failure");
+
+    expect((await repository.listPendingBatches("demo-review")).map((batch) => batch.batchId).sort())
+      .toEqual([first.batchId, second.batchId].sort());
     expect(await repository.loadLearningProfile("demo-review")).toBeNull();
   });
 });
