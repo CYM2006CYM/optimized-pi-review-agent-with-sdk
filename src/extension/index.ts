@@ -3,11 +3,14 @@ import { resolve } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { createJsonlTraceSink } from "pi-loop-graph-sdk";
 import { LearningProfileController } from "../application/learning-profile-controller.js";
+import { ProfileBuildController } from "../application/profile-build-controller.js";
+import { ProfileRevisionController } from "../application/profile-revision-controller.js";
 import { StudySessionController } from "../application/study-session-controller.js";
 import { resolveStudyDataRoot } from "../config/data-paths.js";
 import { createIsolatedGraphExecutor } from "../graphs/isolated-graph-executor.js";
 import { createStudyWalkingSkeletonGraphs } from "../graphs/study-walking-skeleton.js";
 import { PrivateMemoryRepository } from "../repositories/private-memory-repository.js";
+import { ProfileBuildJobRepository } from "../repositories/profile-build-job-repository.js";
 import { ProfileFamilyRepository } from "../repositories/profile-family-repository.js";
 
 export default async function studyHelperExtension(pi: ExtensionAPI): Promise<void> {
@@ -16,6 +19,7 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
   await mkdir(traceDirectory, { recursive: true });
   const profiles = new ProfileFamilyRepository({ dataRoot });
   const memory = new PrivateMemoryRepository({ dataRoot });
+  const buildJobs = new ProfileBuildJobRepository({ dataRoot });
   const graphs = createStudyWalkingSkeletonGraphs(profiles);
   const traceSink = createJsonlTraceSink(resolve(traceDirectory, "loop-graph-lifecycle.jsonl"));
 
@@ -78,6 +82,47 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
       await new LearningProfileController({
         profiles,
         memory,
+        graphs,
+        executeGraph: executorFor(ctx),
+        ui: ctx.ui,
+      }).run(args);
+    },
+  });
+
+  pi.registerCommand("study-build", {
+    description: "从 Markdown/txt 源目录构建新的 canonical Profile",
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("当前 Agent 仍在工作，请稍后再构建 Profile。", "warning");
+        return;
+      }
+      if (!ctx.model) {
+        ctx.ui.notify("请先选择可用模型再构建 Profile。", "warning");
+        return;
+      }
+      await new ProfileBuildController({
+        profiles,
+        jobs: buildJobs,
+        graphs,
+        executeGraph: executorFor(ctx),
+        ui: ctx.ui,
+      }).run(args);
+    },
+  });
+
+  pi.registerCommand("study-revise", {
+    description: "安全修订 active 或已有 draft Profile",
+    handler: async (args, ctx) => {
+      if (!ctx.isIdle()) {
+        ctx.ui.notify("当前 Agent 仍在工作，请稍后再修订 Profile。", "warning");
+        return;
+      }
+      if (!ctx.model) {
+        ctx.ui.notify("请先选择可用模型再修订 Profile。", "warning");
+        return;
+      }
+      await new ProfileRevisionController({
+        profiles,
         graphs,
         executeGraph: executorFor(ctx),
         ui: ctx.ui,

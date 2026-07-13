@@ -9,6 +9,10 @@ import {
   validateQuestionResult,
   validateQuestionResultForRequest,
   validateLearningProfileResult,
+  validateProfileBuildFragment,
+  validateProfileRevisionPatch,
+  validateProfileRevisionPlan,
+  validateProfileRevisionQuality,
   validateSummaryResult,
 } from "../src/graphs/study-walking-skeleton.js";
 import { ProfileFamilyRepository } from "../src/repositories/profile-family-repository.js";
@@ -30,7 +34,7 @@ describe("学习 walking skeleton 图", () => {
     await rm(dataRoot, { recursive: true, force: true });
   });
 
-  it("包含代码准备节点和三个真实 Agent Run 节点", () => {
+  it("包含学习、画像和 Profile 构建所需的真实 Agent Run 节点", () => {
     const graphs = createStudyWalkingSkeletonGraphs(profiles);
     expect(graphs.generateQuestion.nodes.prepare_question_context?.kind).toBe("code");
     expect(graphs.generateQuestion.nodes.generate_question?.kind).toBe("code");
@@ -38,6 +42,10 @@ describe("学习 walking skeleton 图", () => {
     expect(graphs.discussQuestion.nodes.discuss_question?.kind).toBe("code");
     expect(graphs.summarizeSession.nodes.summarize_session?.kind).toBe("code");
     expect(graphs.updateLearningProfile.nodes.update_learning_profile?.kind).toBe("code");
+    expect(graphs.buildProfileFragment.nodes.build_profile_fragment?.kind).toBe("code");
+    expect(graphs.planProfileRevision.nodes.plan_profile_revision?.kind).toBe("code");
+    expect(graphs.reviseProfileDraft.nodes.revise_profile_draft?.kind).toBe("code");
+    expect(graphs.reviewProfileDraft.nodes.review_profile_draft?.kind).toBe("code");
     expect(Object.keys(graphs.generateQuestion.routing)).toEqual(["prepare_question_context", "generate_question"]);
   });
 
@@ -168,6 +176,83 @@ describe("学习 walking skeleton 图", () => {
       strengths: [],
       unverified_topics: [],
       recommendations: [],
+    }).isValid).toBe(false);
+  });
+
+  it("Profile 构建输出门禁只接受当前批次内的完整语义片段", () => {
+    const validFragment = {
+      subject_overview: "介绍主动回忆及其练习方法。",
+      warnings: [],
+      chapters: [{
+        title: "学习方法",
+        source_ids: ["source-1"],
+        sections: [{
+          title: "主动回忆",
+          markdown: "主动回忆要求学习者先尝试从记忆中提取信息，再核对资料。",
+          source_ids: ["source-1"],
+          knowledge_points: [{
+            id: "active-recall",
+            name: "主动回忆",
+            aliases: [],
+            tags: ["记忆"],
+            definition: "不看资料，主动尝试提取已经学习的信息。",
+            key_points: ["先提取，再核对"],
+            common_misconceptions: ["重复阅读等同于掌握"],
+            related: [],
+            question_types: ["short_answer"],
+            difficulty_baseline: "S-U",
+            source_ids: ["source-1"],
+          }],
+        }],
+      }],
+    };
+
+    expect(validateProfileBuildFragment(validFragment, ["source-1"]).isValid).toBe(true);
+    expect(validateProfileBuildFragment({
+      ...validFragment,
+      chapters: [{ ...validFragment.chapters[0], source_ids: ["source-outside-batch"] }],
+    }, ["source-1"]).isValid).toBe(false);
+    expect(validateProfileBuildFragment({
+      ...validFragment,
+      chapters: [{ ...validFragment.chapters[0], sections: [] }],
+    }, ["source-1"]).isValid).toBe(false);
+    expect(validateProfileBuildFragment({
+      ...validFragment,
+      chapters: [{
+        ...validFragment.chapters[0],
+        sections: [{ ...validFragment.chapters[0].sections[0], knowledge_points: [] }],
+      }],
+    }, ["source-1"]).isValid).toBe(false);
+  });
+
+  it("Profile 修订门禁限制影响范围、补丁和质量结论", () => {
+    const plan = {
+      summary: "修订科目说明",
+      requires_clarification: false,
+      clarification_question: "",
+      operations: [{ path: "subject.md", operation: "update" as const, reason: "补充说明" }],
+      warnings: [],
+    };
+    expect(validateProfileRevisionPlan(plan, ["subject.md"]).isValid).toBe(true);
+    expect(validateProfileRevisionPlan({
+      ...plan,
+      operations: [{ path: "profile.json", operation: "update", reason: "越权" }],
+    }, ["profile.json"]).isValid).toBe(false);
+    expect(validateProfileRevisionPatch({
+      summary: "已修订",
+      changes: [{ path: "subject.md", operation: "update", reason: "补充说明", content: "# 修订\n" }],
+      unresolved: [],
+    }, plan).isValid).toBe(true);
+    expect(validateProfileRevisionPatch({
+      summary: "越权",
+      changes: [{ path: "source_map.json", operation: "update", reason: "夹带", content: "{}" }],
+      unresolved: [],
+    }, plan).isValid).toBe(false);
+    expect(validateProfileRevisionQuality({
+      report_markdown: "# 质量报告",
+      blocking_issues: ["缺少卡片"],
+      warnings: [],
+      recommendation: "enable",
     }).isValid).toBe(false);
   });
 

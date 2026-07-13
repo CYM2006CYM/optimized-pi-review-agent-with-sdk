@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, readdir, rm, stat } from "node:fs/promises";
+import { mkdtemp, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { resolve } from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -85,5 +85,48 @@ describe("ProfileFamilyRepository", () => {
     await expect(repository.writeDraftFile("safe", "../escape.txt", "bad")).rejects.toThrow("Unsafe relative path");
     await expect(repository.writeDraftFile("safe", "profile.json", "{}")).rejects.toThrow("Invalid canonical Profile");
     expect((await repository.loadDraftProfile("safe")).subjectId).toBe("safe");
+  });
+
+  it("原子应用多文件修订并在校验失败时保留原 draft", async () => {
+    await repository.seedDemoProfile();
+    const created = await repository.createRevisionDraft("demo-review");
+    await repository.applyDraftChanges("demo-review", [
+      { path: "subject.md", operation: "update", reason: "测试", content: "# 原子修订\n" },
+      { path: "cards/new-card.md", operation: "create", reason: "测试", content: "# 新卡片\n" },
+    ]);
+    expect(await repository.readDraftFile("demo-review", "subject.md")).toBe("# 原子修订\n");
+    expect(await repository.readDraftFile("demo-review", "cards/new-card.md")).toBe("# 新卡片\n");
+    expect(new Date((await repository.loadDraftProfile("demo-review")).updatedAt).getTime())
+      .toBeGreaterThanOrEqual(new Date(created.updatedAt).getTime());
+
+    const before = await repository.readDraftFile("demo-review", "subject.md");
+    await expect(repository.applyDraftChanges("demo-review", [
+      { path: "subject.md", operation: "update", reason: "不应提交", content: "# 半成品\n" },
+      { path: "knowledge_index.json", operation: "update", reason: "损坏", content: "not-json" },
+    ])).rejects.toThrow("Invalid canonical Profile");
+    expect(await repository.readDraftFile("demo-review", "subject.md")).toBe(before);
+  });
+
+  it("拒绝用陈旧 revision draft 覆盖已变化的 active", async () => {
+    await repository.seedDemoProfile();
+    await repository.createRevisionDraft("demo-review");
+    const family = repository.familyDirectory("demo-review");
+    const activeManifestPath = resolve(family, "active", "profile.json");
+    const active = JSON.parse(await readFile(activeManifestPath, "utf8"));
+    await writeFile(activeManifestPath, `${JSON.stringify({ ...active, version: "newer-active-version" }, null, 2)}\n`, "utf8");
+
+    await expect(repository.enableDraft("demo-review")).rejects.toThrow("Revision draft is stale");
+    expect((await repository.loadActiveProfile("demo-review")).version).toBe("newer-active-version");
+    expect((await repository.loadDraftProfile("demo-review")).revision).toBe(2);
+  });
+
+  it("修订候选同时列出 active 和 draft-only family", async () => {
+    await repository.seedDemoProfile();
+    await repository.createDraftProfile({ subjectId: "draft-only", name: "仅草稿" });
+
+    expect(await repository.listRevisionCandidates()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ subjectId: "demo-review", hasActive: true, hasDraft: false }),
+      expect.objectContaining({ subjectId: "draft-only", hasActive: false, hasDraft: true }),
+    ]));
   });
 });

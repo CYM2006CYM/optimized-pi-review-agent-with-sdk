@@ -40,8 +40,8 @@ child.stderr.on("data", (chunk) => { stderr += chunk; });
 const exit = await new Promise((resolveExit, reject) => {
   const timeout = setTimeout(() => {
     child.kill();
-    reject(new Error("真实 Agent probe 在 6 分钟内未完成"));
-  }, 360_000);
+    reject(new Error("真实 Agent probe 在 9 分钟内未完成"));
+  }, 540_000);
   child.on("error", reject);
   child.on("exit", (code, signal) => {
     clearTimeout(timeout);
@@ -68,7 +68,7 @@ try {
   const contractRuns = new Set(events.filter((event) => event.type === "output_contract.prepared").map(runKey));
   const acceptedRuns = new Set(events.filter((event) => event.type === "completion.accepted").map(runKey));
   const contractRunWithoutAccepted = [...contractRuns].filter((key) => !acceptedRuns.has(key));
-  const requiredNodes = ["prepare_question_context", "generate_question", "grade_answer", "discuss_question", "summarize_session", "update_learning_profile"];
+  const requiredNodes = ["prepare_question_context", "generate_question", "grade_answer", "discuss_question", "summarize_session", "update_learning_profile", "build_profile_fragment", "plan_profile_revision", "revise_profile_draft", "review_profile_draft"];
   const pendingRoot = join(dataRoot, "profile_families", "demo-review", "_user", "summaries", "pending");
   const batches = await readdir(pendingRoot);
   if (batches.length !== 1) throw new Error(`probe 应产生一个学习记录批次，实际为 ${batches.length}`);
@@ -78,12 +78,12 @@ try {
   const summary = await readFile(join(batchRoot, "summary.md"), "utf8").catch(() => "");
   if (
     exit.code !== 0 ||
-    graphEnds.length !== 5 ||
+    graphEnds.length !== 9 ||
     graphEnds.some((event) => event.status !== "ok") ||
     requiredNodes.some((nodeId) => !enteredNodes.includes(nodeId)) ||
-    contractRuns.size !== 5 ||
-    eventCount("completion.submitted") < 5 ||
-    eventCount("completion.validation_started") < 5 ||
+    contractRuns.size !== 9 ||
+    eventCount("completion.submitted") < 9 ||
+    eventCount("completion.validation_started") < 9 ||
     contractRunWithoutAccepted.length > 0 ||
     session.status !== "completed" ||
     attempts.length !== 1 ||
@@ -93,7 +93,7 @@ try {
       `probe 未闭环：exit=${exit.code}, signal=${exit.signal ?? "none"}, graphEnds=${JSON.stringify(graphEnds)}, nodes=${enteredNodes.join(",")}, contractRuns=${contractRuns.size}, submitted=${eventCount("completion.submitted")}, validation=${eventCount("completion.validation_started")}, accepted=${eventCount("completion.accepted")}, contractRunWithoutAccepted=${contractRunWithoutAccepted.join(",")}, session=${session.status}, attempts=${attempts.length}, summary=${summary.length}\nstdout:\n${stdout.trim()}\nstderr:\n${stderr.trim()}`,
     );
   }
-  console.log(`真实 pi Agent probe 通过：${enteredNodes.join(" → ")}；5 张图均到达 END；输出契约 Run=${contractRuns.size}；候选提交=${eventCount("completion.submitted")}；候选接受=${eventCount("completion.accepted")}；会话=${session.status}；题目记录=${attempts.length}；总结已保存；学习画像候选已生成`);
+  console.log(`真实 pi Agent probe 通过：${enteredNodes.join(" → ")}；9 张图均到达 END；输出契约 Run=${contractRuns.size}；候选提交=${eventCount("completion.submitted")}；候选接受=${eventCount("completion.accepted")}；会话=${session.status}；题目记录=${attempts.length}；总结已保存；学习画像、Profile 构建与修订候选均已生成`);
   if (stdout.trim()) console.log(stdout.trim());
   if (stderr.trim()) console.error(stderr.trim());
 } finally {

@@ -8,6 +8,16 @@ import type {
 } from "pi-loop-graph-sdk";
 import type { DifficultyLevel, GradeResult, ReviewQuestion } from "../domain/types.js";
 import type { LearningProfileCandidate } from "../domain/learning-profile-evidence.js";
+import type { ProfileBuildFragment } from "../domain/profile-build.js";
+import type {
+  ProfileRevisionPatch,
+  ProfileRevisionPlan,
+  ProfileRevisionQualityReview,
+} from "../domain/profile-revision.js";
+import {
+  assertValidRevisionPatch,
+  assertValidRevisionPlan,
+} from "../domain/profile-revision.js";
 import { loadActiveStudyTargetContext, type StudyTargetKind } from "../domain/study-profile.js";
 import { getDifficultyPolicy, getReviewModePolicy } from "../domain/study-policy.js";
 import type { ProfileFamilyRepository } from "../repositories/profile-family-repository.js";
@@ -95,6 +105,122 @@ const learningProfileOutputSchema = {
     recommendations: { type: "array", items: { type: "string" } },
   },
   required: ["profile_summary", "weak_points", "strengths", "unverified_topics", "recommendations"],
+  additionalProperties: false,
+};
+
+const profileBuildPointSchema = {
+  type: "object",
+  properties: {
+    id: { type: "string" },
+    name: { type: "string" },
+    aliases: { type: "array", items: { type: "string" } },
+    tags: { type: "array", items: { type: "string" } },
+    definition: { type: "string" },
+    key_points: { type: "array", items: { type: "string" } },
+    common_misconceptions: { type: "array", items: { type: "string" } },
+    related: { type: "array", items: { type: "string" } },
+    question_types: { type: "array", items: { enum: ["choice", "judgment", "short_answer"] } },
+    difficulty_baseline: { enum: ["S-R", "S-U", "M-U", "M-A", "C-A"] },
+    source_ids: { type: "array", items: { type: "string" } },
+  },
+  required: ["id", "name", "aliases", "tags", "definition", "key_points", "common_misconceptions", "related", "question_types", "difficulty_baseline", "source_ids"],
+  additionalProperties: false,
+};
+
+const profileBuildFragmentSchema = {
+  type: "object",
+  properties: {
+    subject_overview: { type: "string" },
+    chapters: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          title: { type: "string" },
+          source_ids: { type: "array", items: { type: "string" } },
+          sections: {
+            type: "array",
+            items: {
+              type: "object",
+              properties: {
+                title: { type: "string" },
+                markdown: { type: "string" },
+                source_ids: { type: "array", items: { type: "string" } },
+                knowledge_points: { type: "array", items: profileBuildPointSchema },
+              },
+              required: ["title", "markdown", "source_ids", "knowledge_points"],
+              additionalProperties: false,
+            },
+          },
+        },
+        required: ["title", "source_ids", "sections"],
+        additionalProperties: false,
+      },
+    },
+    warnings: { type: "array", items: { type: "string" } },
+  },
+  required: ["subject_overview", "chapters", "warnings"],
+  additionalProperties: false,
+};
+
+const profileRevisionPlanSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    requires_clarification: { type: "boolean" },
+    clarification_question: { type: "string" },
+    operations: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          operation: { enum: ["create", "update", "delete"] },
+          reason: { type: "string" },
+        },
+        required: ["path", "operation", "reason"],
+        additionalProperties: false,
+      },
+    },
+    warnings: { type: "array", items: { type: "string" } },
+  },
+  required: ["summary", "requires_clarification", "clarification_question", "operations", "warnings"],
+  additionalProperties: false,
+};
+
+const profileRevisionPatchSchema = {
+  type: "object",
+  properties: {
+    summary: { type: "string" },
+    changes: {
+      type: "array",
+      items: {
+        type: "object",
+        properties: {
+          path: { type: "string" },
+          operation: { enum: ["create", "update", "delete"] },
+          content: { type: "string" },
+          reason: { type: "string" },
+        },
+        required: ["path", "operation", "reason"],
+        additionalProperties: false,
+      },
+    },
+    unresolved: { type: "array", items: { type: "string" } },
+  },
+  required: ["summary", "changes", "unresolved"],
+  additionalProperties: false,
+};
+
+const profileRevisionQualitySchema = {
+  type: "object",
+  properties: {
+    report_markdown: { type: "string" },
+    blocking_issues: { type: "array", items: { type: "string" } },
+    warnings: { type: "array", items: { type: "string" } },
+    recommendation: { enum: ["enable", "revise"] },
+  },
+  required: ["report_markdown", "blocking_issues", "warnings", "recommendation"],
   additionalProperties: false,
 };
 
@@ -198,6 +324,94 @@ export function validateLearningProfileResult(result: Record<string, unknown>): 
   return { isValid: true };
 }
 
+export function validateProfileBuildFragment(
+  result: Record<string, unknown>,
+  allowedSourceIds: readonly string[] = [],
+): CompletionValidationResult {
+  if (!validString(result.subject_overview)) return { isValid: false, reason: "subject_overview 不能为空" };
+  if (!Array.isArray(result.warnings) || result.warnings.some((item) => typeof item !== "string")) {
+    return { isValid: false, reason: "warnings 必须是字符串数组" };
+  }
+  if (!Array.isArray(result.chapters) || result.chapters.length === 0) {
+    return { isValid: false, reason: "chapters 必须是非空数组" };
+  }
+  const allowed = new Set(allowedSourceIds);
+  const validSources = (value: unknown): value is string[] => Array.isArray(value)
+    && value.length > 0
+    && value.every((item) => typeof item === "string" && (allowed.size === 0 || allowed.has(item)));
+  for (const chapter of result.chapters as Array<Record<string, unknown>>) {
+    if (!validString(chapter.title) || !validSources(chapter.source_ids)) {
+      return { isValid: false, reason: "chapter title/source_ids 无效或超出当前批次" };
+    }
+    if (!Array.isArray(chapter.sections) || chapter.sections.length === 0) {
+      return { isValid: false, reason: "每章至少需要一个 section" };
+    }
+    for (const section of chapter.sections as Array<Record<string, unknown>>) {
+      if (!validString(section.title) || !validString(section.markdown) || !validSources(section.source_ids)) {
+        return { isValid: false, reason: "section 字段无效或 source_ids 超出当前批次" };
+      }
+      if (!Array.isArray(section.knowledge_points) || section.knowledge_points.length === 0) {
+        return { isValid: false, reason: "每个 section 至少需要一个 knowledge point" };
+      }
+      for (const point of section.knowledge_points as Array<Record<string, unknown>>) {
+        for (const key of ["id", "name", "definition"]) {
+          if (!validString(point[key])) return { isValid: false, reason: `knowledge point ${key} 不能为空` };
+        }
+        for (const key of ["aliases", "tags", "key_points", "common_misconceptions", "related", "question_types"]) {
+          if (!Array.isArray(point[key]) || (point[key] as unknown[]).some((item) => typeof item !== "string")) {
+            return { isValid: false, reason: `knowledge point ${key} 必须是字符串数组` };
+          }
+        }
+        if (!validSources(point.source_ids)) return { isValid: false, reason: "knowledge point source_ids 超出当前批次" };
+        if (!(new Set(["S-R", "S-U", "M-U", "M-A", "C-A"])).has(String(point.difficulty_baseline))) {
+          return { isValid: false, reason: "knowledge point difficulty_baseline 无效" };
+        }
+      }
+    }
+  }
+  return { isValid: true };
+}
+
+export function validateProfileRevisionPlan(
+  result: Record<string, unknown>,
+  existingPaths: readonly string[],
+): CompletionValidationResult {
+  try {
+    assertValidRevisionPlan(result as unknown as ProfileRevisionPlan, existingPaths);
+    return { isValid: true };
+  } catch (error) {
+    return { isValid: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export function validateProfileRevisionPatch(
+  result: Record<string, unknown>,
+  plan: ProfileRevisionPlan,
+): CompletionValidationResult {
+  try {
+    assertValidRevisionPatch(result as unknown as ProfileRevisionPatch, plan);
+    return { isValid: true };
+  } catch (error) {
+    return { isValid: false, reason: error instanceof Error ? error.message : String(error) };
+  }
+}
+
+export function validateProfileRevisionQuality(result: Record<string, unknown>): CompletionValidationResult {
+  if (!validString(result.report_markdown)) return { isValid: false, reason: "report_markdown 不能为空" };
+  for (const key of ["blocking_issues", "warnings"]) {
+    if (!Array.isArray(result[key]) || (result[key] as unknown[]).some((item) => typeof item !== "string" || item.trim() === "")) {
+      return { isValid: false, reason: `${key} 必须是非空字符串数组` };
+    }
+  }
+  if (result.recommendation !== "enable" && result.recommendation !== "revise") {
+    return { isValid: false, reason: "recommendation 必须是 enable 或 revise" };
+  }
+  if ((result.blocking_issues as unknown[]).length > 0 && result.recommendation !== "revise") {
+    return { isValid: false, reason: "存在 blocking_issues 时 recommendation 必须为 revise" };
+  }
+  return { isValid: true };
+}
+
 function finishEdge(from: string): Edge {
   return {
     id: `${from}_to_end`,
@@ -224,6 +438,10 @@ export interface StudyWalkingSkeletonGraphs {
   discussQuestion: Graph;
   summarizeSession: Graph;
   updateLearningProfile: Graph;
+  buildProfileFragment: Graph;
+  planProfileRevision: Graph;
+  reviseProfileDraft: Graph;
+  reviewProfileDraft: Graph;
 }
 
 export function createStudyWalkingSkeletonGraphs(
@@ -423,7 +641,188 @@ LearningProfileEvidence：${JSON.stringify(input.data.evidence)}`,
     },
   };
 
-  return { generateQuestion, gradeAnswer, discussQuestion, summarizeSession, updateLearningProfile };
+  const profileBuildNode: Node = {
+    kind: "code",
+    id: "build_profile_fragment",
+    subGoal: "从代码提供的 Markdown/txt 批次提取 canonical Profile 语义单元",
+    tools: [],
+    execute(instance, input, ctx) {
+      const allowedSourceIds = Array.isArray(input.data.allowedSourceIds)
+        ? input.data.allowedSourceIds.filter((item): item is string => typeof item === "string")
+        : [];
+      return createAgentExecute({
+        outputSchema: profileBuildFragmentSchema,
+        validateCompletion: (result) => validateProfileBuildFragment(result, allowedSourceIds),
+        prompt: (nextInput) => `你正在从一批用户提供的 Markdown/txt 构建 canonical 学习资料包语义片段。
+
+要求：
+1. 只能使用 sources 中的内容，不得自行读取文件、调用工具或引入资料外事实。
+2. chapters/sections 按资料本身的主题组织；每个 section 至少提取一个可学习知识点。
+3. knowledge point id 使用简短稳定的英文/数字 kebab-case；name 使用资料中的可读名称。
+4. markdown 是该小节的自包含学习正文，不包含 frontmatter、来源路径、出题提示或虚构内容。
+5. source_ids 只能使用 allowedSourceIds，并准确标记实际依据。
+6. question_types 只使用 choice、judgment、short_answer；difficulty_baseline 只使用五档固定等级。
+7. 不确定或资料缺失写入 warnings，不要补造。
+8. 完成后调用 __graph_complete__，严格提交 schema。
+
+科目：${String(nextInput.data.subjectName)}
+批次：${String(nextInput.data.batchIndex)} / ${String(nextInput.data.batchCount)}
+allowedSourceIds：${JSON.stringify(allowedSourceIds)}
+sources：${JSON.stringify(nextInput.data.sources)}`,
+      })(instance, input, ctx);
+    },
+  };
+  const buildProfileFragment: Graph = {
+    id: "study_build_profile_fragment",
+    goal: "从受控源文件批次提取 canonical Profile 语义片段",
+    entries: [singleNodeEntry("build_profile_fragment")],
+    nodes: { build_profile_fragment: profileBuildNode },
+    routing: {
+      build_profile_fragment: {
+        nodeId: "build_profile_fragment",
+        edges: [finishEdge("build_profile_fragment")],
+        router: { kind: "first-match" },
+      },
+    },
+  };
+
+  const planProfileRevisionNode: Node = {
+    kind: "code",
+    id: "plan_profile_revision",
+    subGoal: "根据用户反馈确定 canonical draft 的最小受影响文件集合",
+    tools: [],
+    execute(instance, input, ctx) {
+      const existingPaths = Array.isArray(input.data.existingPaths)
+        ? input.data.existingPaths.filter((item): item is string => typeof item === "string")
+        : [];
+      return createAgentExecute({
+        outputSchema: profileRevisionPlanSchema,
+        validateCompletion: (result) => validateProfileRevisionPlan(result, existingPaths),
+        prompt: (nextInput) => `为一个 canonical 学习资料包 draft 制定最小修订计划。
+
+规则：
+1. 只根据用户反馈和代码提供的 catalog/coreFiles 规划，不读取文件或调用工具。
+2. 只修改确实受影响的文件；关联的 index、卡片、章节、考点或 source_map 必须同步列入。
+3. 不得修改 profile.json、quality_report.md、_user、active 或 archived。
+4. update/delete 只能选择 existingPaths；create 只能使用 cards/、chapters/、exam_points/ 下安全的 .md/.json 路径。
+5. 反馈含糊或缺少关键内容时，requires_clarification=true、给出一个具体问题并保持 operations 为空。
+6. 资料没有证据支持的内容写入 warnings，不要计划虚构内容。
+7. operations 最多 12 项；完成后调用 __graph_complete__。
+
+用户反馈：${String(nextInput.data.feedback)}
+Profile：${JSON.stringify(nextInput.data.profile)}
+existingPaths：${JSON.stringify(existingPaths)}
+catalog：${JSON.stringify(nextInput.data.catalog)}
+coreFiles：${JSON.stringify(nextInput.data.coreFiles)}`,
+      })(instance, input, ctx);
+    },
+  };
+  const planProfileRevision: Graph = {
+    id: "study_plan_profile_revision",
+    goal: "确定资料包修订的最小影响范围",
+    entries: [singleNodeEntry("plan_profile_revision")],
+    nodes: { plan_profile_revision: planProfileRevisionNode },
+    routing: {
+      plan_profile_revision: {
+        nodeId: "plan_profile_revision",
+        edges: [finishEdge("plan_profile_revision")],
+        router: { kind: "first-match" },
+      },
+    },
+  };
+
+  const reviseProfileDraftNode: Node = {
+    kind: "code",
+    id: "revise_profile_draft",
+    subGoal: "在计划白名单内生成 canonical draft 文件补丁",
+    tools: [],
+    execute(instance, input, ctx) {
+      const plan = input.data.plan as ProfileRevisionPlan;
+      return createAgentExecute({
+        outputSchema: profileRevisionPatchSchema,
+        validateCompletion: (result) => validateProfileRevisionPatch(result, plan),
+        prompt: (nextInput) => `根据已批准的修订计划生成完整文件替换内容。
+
+规则：
+1. 只能提交 plan 中列出的 path 和 operation，不得扩大影响范围。
+2. update/create 必须给出完整文件 content；delete 不得给出内容。
+3. 保留资料中未被反馈否定的事实，不引入 currentFiles 或用户反馈以外的知识。
+4. 修改知识点时同步维护计划内的 index、卡片、章节、考点和 source_map。
+5. JSON 必须是合法完整 JSON；Markdown 必须保持 canonical frontmatter 和正文结构。
+6. 资料不足时写入 unresolved；不要猜测。完成后调用 __graph_complete__。
+
+用户反馈：${String(nextInput.data.feedback)}
+Profile：${JSON.stringify(nextInput.data.profile)}
+plan：${JSON.stringify(plan)}
+currentFiles（新文件的 content 为 null）：${JSON.stringify(nextInput.data.currentFiles)}`,
+      })(instance, input, ctx);
+    },
+  };
+  const reviseProfileDraft: Graph = {
+    id: "study_revise_profile_draft",
+    goal: "在受控影响范围内修订 canonical draft",
+    entries: [singleNodeEntry("revise_profile_draft")],
+    nodes: { revise_profile_draft: reviseProfileDraftNode },
+    routing: {
+      revise_profile_draft: {
+        nodeId: "revise_profile_draft",
+        edges: [finishEdge("revise_profile_draft")],
+        router: { kind: "first-match" },
+      },
+    },
+  };
+
+  const reviewProfileDraftNode: Node = {
+    kind: "code",
+    id: "review_profile_draft",
+    subGoal: "独立审查修订后的 draft 并生成质量报告",
+    tools: [],
+    execute: createAgentExecute({
+      outputSchema: profileRevisionQualitySchema,
+      validateCompletion: validateProfileRevisionQuality,
+      prompt: (input) => `独立审查刚完成修订的 canonical Profile draft。
+
+规则：
+1. 代码给出的 structureInspection.blockingIssues 必须原样计入 blocking_issues，不得降低级别。
+2. 检查用户反馈是否在 changedFiles 中得到满足，关联文件是否语义一致。
+3. 不使用 snapshot 以外的事实，不声称检查了未提供的文件正文。
+4. report_markdown 必须包含整体评估、结构指标、严重问题、待改进项、修订摘要和明确启用建议。
+5. blocking_issues 非空时 recommendation 必须为 revise；无阻塞项时可以建议 enable。
+6. 完成后调用 __graph_complete__。
+
+用户反馈：${String(input.data.feedback)}
+修订计划：${JSON.stringify(input.data.plan)}
+补丁摘要：${JSON.stringify(input.data.patchSummary)}
+structureInspection：${JSON.stringify(input.data.structureInspection)}
+coreFiles：${JSON.stringify(input.data.coreFiles)}
+changedFiles：${JSON.stringify(input.data.changedFiles)}`,
+    }),
+  };
+  const reviewProfileDraft: Graph = {
+    id: "study_review_profile_draft",
+    goal: "形成修订 draft 的独立质量结论",
+    entries: [singleNodeEntry("review_profile_draft")],
+    nodes: { review_profile_draft: reviewProfileDraftNode },
+    routing: {
+      review_profile_draft: {
+        nodeId: "review_profile_draft",
+        edges: [finishEdge("review_profile_draft")],
+        router: { kind: "first-match" },
+      },
+    },
+  };
+
+  return {
+    generateQuestion,
+    gradeAnswer,
+    discussQuestion,
+    summarizeSession,
+    updateLearningProfile,
+    buildProfileFragment,
+    planProfileRevision,
+    reviseProfileDraft,
+    reviewProfileDraft,
+  };
 }
 
 export function asReviewQuestion(result: Record<string, unknown>): ReviewQuestion & { question_id: string } {
@@ -442,6 +841,30 @@ export function asLearningProfileCandidate(result: Record<string, unknown>): Lea
   const validation = validateLearningProfileResult(result);
   if (!validation.isValid) throw new Error(validation.reason);
   return result as unknown as LearningProfileCandidate;
+}
+
+export function asProfileBuildFragment(result: Record<string, unknown>, allowedSourceIds: readonly string[]): ProfileBuildFragment {
+  const validation = validateProfileBuildFragment(result, allowedSourceIds);
+  if (!validation.isValid) throw new Error(validation.reason);
+  return result as unknown as ProfileBuildFragment;
+}
+
+export function asProfileRevisionPlan(result: Record<string, unknown>, existingPaths: readonly string[]): ProfileRevisionPlan {
+  const validation = validateProfileRevisionPlan(result, existingPaths);
+  if (!validation.isValid) throw new Error(validation.reason);
+  return result as unknown as ProfileRevisionPlan;
+}
+
+export function asProfileRevisionPatch(result: Record<string, unknown>, plan: ProfileRevisionPlan): ProfileRevisionPatch {
+  const validation = validateProfileRevisionPatch(result, plan);
+  if (!validation.isValid) throw new Error(validation.reason);
+  return result as unknown as ProfileRevisionPatch;
+}
+
+export function asProfileRevisionQuality(result: Record<string, unknown>): ProfileRevisionQualityReview {
+  const validation = validateProfileRevisionQuality(result);
+  if (!validation.isValid) throw new Error(validation.reason);
+  return result as unknown as ProfileRevisionQualityReview;
 }
 
 export function difficultyFrom(value: string): DifficultyLevel {

@@ -1,5 +1,5 @@
 import { cp, mkdir, readFile, readdir, rename, rm, stat } from "node:fs/promises";
-import { dirname, resolve } from "node:path";
+import { dirname, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { profileFamiliesRoot, resolveStudyDataRoot } from "../config/data-paths.js";
 import {
@@ -8,6 +8,8 @@ import {
   validateCanonicalProfileDirectory,
 } from "../domain/profile-schema.js";
 import type { Profile } from "../domain/types.js";
+import type { ProfileRevisionChange, ProfileFileSnapshot } from "../domain/profile-revision.js";
+import { isMutableProfileContentPath } from "../domain/profile-revision.js";
 import {
   assertSafeRelativePath,
   assertSafeSubjectId,
@@ -27,6 +29,15 @@ export interface CreateDraftProfileInput {
   subjectId: string;
   name: string;
   subjectMarkdown?: string;
+}
+
+export interface ProfileRevisionCandidate {
+  subjectId: string;
+  name: string;
+  hasActive: boolean;
+  hasDraft: boolean;
+  activeRevision?: number;
+  draftRevision?: number;
 }
 
 async function pathExists(path: string): Promise<boolean> {
@@ -122,6 +133,34 @@ export class ProfileFamilyRepository {
 
   async loadDraftProfile(subjectId: string): Promise<Profile> {
     return validateCanonicalProfileDirectory(this.slotDirectory(subjectId, "draft"), subjectId, "draft");
+  }
+
+  async listRevisionCandidates(): Promise<ProfileRevisionCandidate[]> {
+    await mkdir(this.familiesRoot, { recursive: true });
+    const families = await readdir(this.familiesRoot, { withFileTypes: true });
+    const candidates: ProfileRevisionCandidate[] = [];
+    for (const family of families) {
+      if (!family.isDirectory()) continue;
+      try {
+        assertSafeSubjectId(family.name);
+      } catch {
+        continue;
+      }
+      let active: Profile | undefined;
+      let draft: Profile | undefined;
+      try { active = await this.loadActiveProfile(family.name); } catch { /* candidate may be draft-only */ }
+      try { draft = await this.loadDraftProfile(family.name); } catch { /* candidate may be active-only */ }
+      if (!active && !draft) continue;
+      candidates.push({
+        subjectId: family.name,
+        name: draft?.name ?? active!.name,
+        hasActive: active !== undefined,
+        hasDraft: draft !== undefined,
+        activeRevision: active?.revision,
+        draftRevision: draft?.revision,
+      });
+    }
+    return candidates.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"));
   }
 
   /** active 只读出口；代码节点可读取资料，但仓库不提供 active 写入能力。 */
@@ -220,6 +259,91 @@ export class ProfileFamilyRepository {
     await writeTextAtomic(target, content);
   }
 
+  async readDraftFile(subjectId: string, relativePath: string): Promise<string> {
+    assertSafeRelativePath(relativePath);
+    const draft = this.slotDirectory(subjectId, "draft");
+    await this.loadDraftProfile(subjectId);
+    return readFile(resolveInside(draft, relativePath), "utf8");
+  }
+
+  async listDraftFiles(subjectId: string): Promise<ProfileFileSnapshot[]> {
+    const draft = this.slotDirectory(subjectId, "draft");
+    await this.loadDraftProfile(subjectId);
+    const files: ProfileFileSnapshot[] = [];
+    const visit = async (directory: string): Promise<void> => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
+        if (entry.isSymbolicLink()) throw new Error(`Symbolic links are not allowed in Profile draft: ${entry.name}`);
+        const absolute = resolveInside(directory, entry.name);
+        if (entry.isDirectory()) await visit(absolute);
+        else if (entry.isFile() && /\.(md|json)$/iu.test(entry.name)) {
+          const relativePath = relative(draft, absolute).replaceAll("\\", "/");
+          assertSafeRelativePath(relativePath);
+          files.push({ path: relativePath, content: await readFile(absolute, "utf8") });
+        }
+      }
+    };
+    await visit(draft);
+    return files;
+  }
+
+  async applyDraftChanges(subjectId: string, changes: readonly ProfileRevisionChange[]): Promise<Profile> {
+    if (changes.length === 0) throw new Error("Profile revision requires at least one change");
+    const draft = this.slotDirectory(subjectId, "draft");
+    await this.loadDraftProfile(subjectId);
+    await this.listDraftFiles(subjectId);
+    const seen = new Set<string>();
+    for (const change of changes) {
+      const path = change.path.replaceAll("\\", "/");
+      assertSafeRelativePath(path);
+      if (!isMutableProfileContentPath(path) && path !== "quality_report.md") {
+        throw new Error(`Profile revision path is not writable: ${path}`);
+      }
+      if (change.operation === "delete" && ["subject.md", "knowledge_index.json", "source_map.json", "quality_report.md"].includes(path)) {
+        throw new Error(`Required Profile file cannot be deleted: ${path}`);
+      }
+      if (seen.has(path)) throw new Error(`Duplicate Profile revision path: ${path}`);
+      seen.add(path);
+      if (change.operation !== "delete" && typeof change.content !== "string") {
+        throw new Error(`Profile revision content is required: ${path}`);
+      }
+    }
+
+    const family = this.familyDirectory(subjectId);
+    const temporary = resolveInside(family, `.draft-update-${crypto.randomUUID()}`);
+    const backup = resolveInside(family, `.draft-backup-${crypto.randomUUID()}`);
+    try {
+      await cp(draft, temporary, { recursive: true, errorOnExist: true });
+      for (const change of changes) {
+        const target = resolveInside(temporary, change.path);
+        if (change.operation === "delete") await rm(target, { force: true });
+        else await writeTextAtomic(target, change.content!);
+      }
+      const manifest = parseProfileManifest(await readFile(resolve(temporary, "profile.json"), "utf8"), subjectId, "draft");
+      await writeJsonAtomic(resolve(temporary, "profile.json"), {
+        ...manifest,
+        updatedAt: this.now().toISOString(),
+      });
+      await validateCanonicalProfileDirectory(temporary, subjectId, "draft");
+      await rename(draft, backup);
+      try {
+        await rename(temporary, draft);
+      } catch (error) {
+        await rename(backup, draft);
+        throw error;
+      }
+      await rm(backup, { recursive: true, force: true }).catch(() => undefined);
+      return this.loadDraftProfile(subjectId);
+    } catch (error) {
+      await rm(temporary, { recursive: true, force: true });
+      if (await pathExists(backup)) {
+        if (!(await pathExists(draft))) await rename(backup, draft);
+        else await rm(backup, { recursive: true, force: true });
+      }
+      throw error;
+    }
+  }
+
   private async nextArchiveDirectory(subjectId: string): Promise<string> {
     const archived = resolveInside(this.familyDirectory(subjectId), "archived");
     await mkdir(archived, { recursive: true });
@@ -235,6 +359,19 @@ export class ProfileFamilyRepository {
     const draft = this.slotDirectory(subjectId, "draft");
     const active = this.slotDirectory(subjectId, "active");
     const currentDraft = await validateCanonicalProfileDirectory(draft, subjectId, "draft");
+    await this.listDraftFiles(subjectId);
+    const activeExists = await pathExists(active);
+    let currentActive: Profile | undefined;
+    if (activeExists) currentActive = await validateCanonicalProfileDirectory(active, subjectId, "active");
+    if (currentDraft.revisionOf !== undefined) {
+      if (!currentActive) throw new Error("Revision draft cannot be enabled because its active source is missing");
+      if (currentDraft.revisionOf !== currentActive.version) {
+        throw new Error(`Revision draft is stale: expected active ${currentDraft.revisionOf}, found ${currentActive.version}`);
+      }
+    } else if (currentActive) {
+      throw new Error("A new Profile draft cannot replace an existing active Profile without revisionOf");
+    }
+
     const date = this.now();
     const activated: Profile = {
       ...currentDraft,
@@ -243,20 +380,32 @@ export class ProfileFamilyRepository {
       updatedAt: date.toISOString(),
       paths: { ...currentDraft.paths },
     };
-    await writeJsonAtomic(resolve(draft, "profile.json"), activated);
-    await validateCanonicalProfileDirectory(draft, subjectId, "active");
-
+    const family = this.familyDirectory(subjectId);
+    const prepared = resolveInside(family, `.active-enable-${crypto.randomUUID()}`);
+    const draftBackup = resolveInside(family, `.draft-enable-backup-${crypto.randomUUID()}`);
     let archive: string | undefined;
     try {
-      if (await pathExists(active)) {
-        await validateCanonicalProfileDirectory(active, subjectId, "active");
+      await cp(draft, prepared, { recursive: true, errorOnExist: true });
+      await writeJsonAtomic(resolve(prepared, "profile.json"), activated);
+      await validateCanonicalProfileDirectory(prepared, subjectId, "active");
+      if (currentActive) {
         archive = await this.nextArchiveDirectory(subjectId);
         await rename(active, archive);
       }
-      await rename(draft, active);
+      await rename(draft, draftBackup);
+      try {
+        await rename(prepared, active);
+      } catch (error) {
+        await rename(draftBackup, draft);
+        if (archive !== undefined && !(await pathExists(active)) && (await pathExists(archive))) {
+          await rename(archive, active);
+        }
+        throw error;
+      }
+      await rm(draftBackup, { recursive: true, force: true }).catch(() => undefined);
     } catch (error) {
-      const restoredDraft: Profile = { ...activated, status: "draft", slot: "draft" };
-      if (await pathExists(draft)) await writeJsonAtomic(resolve(draft, "profile.json"), restoredDraft);
+      await rm(prepared, { recursive: true, force: true });
+      if (await pathExists(draftBackup) && !(await pathExists(draft))) await rename(draftBackup, draft);
       if (archive !== undefined && !(await pathExists(active)) && (await pathExists(archive))) {
         await rename(archive, active);
       }

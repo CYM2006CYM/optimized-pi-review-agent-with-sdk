@@ -1,6 +1,6 @@
 # 当前形态
 
-> 状态日期：2026-07-13
+> 状态日期：2026-07-14
 > 本文只记录已经由代码、自动测试或真实 pi probe 证明的事实。
 
 ## 当前可运行链路
@@ -22,7 +22,7 @@ Pi Study Helper 已经不再是工程骨架。当前主链路为：
 → 代码保存总结并把会话标记为 completed
 ```
 
-交互式 `/study` 的 P0 人工门禁已经全部通过：题目稳定展示、Agent 内部输出隔离、确定性放弃、取消清理、订正前讨论和 `chapter_study` mode 均有真实 TUI 证据。当前进入 P1 模式、难度与总结语义验收。
+P0 至 P4 的真实 Pi 人工门禁均已通过；学习、恢复、手动学习画像和原始资料自动创建 Profile 均有磁盘与 trace 证据。当前进入 P5 资料包修订闭环。
 
 ## 已实现
 
@@ -81,6 +81,39 @@ profile_families/{subjectId}/
 
 学习画像的可信存储、消费事务和手动 Agent 生成入口均已实现。
 
+### 原始资料自动创建 Profile
+
+`/study-build [源目录]` 当前支持：
+
+- 代码递归盘点 Markdown/txt，忽略符号链接，并限制文件数、单文件大小和总大小。
+- 为每个源文件计算 SHA-256，按字符预算分批；执行批次前重新校验内容 hash，避免源文件变化后沿用旧 checkpoint。
+- 构建 job、批次进度和每批 Agent 语义片段独立保存；失败后再次执行命令可从未完成批次继续。
+- Agent 只能消费代码传入的当前批次，不能自行遍历目录；输出中的 `source_ids` 必须属于当前批次。
+- 代码合并跨批章节、小节和知识点，并生成 `subject.md`、`knowledge_index.json`、`chapters/**`、`cards/**`、`exam_points/**`、`source_map.json` 和 `quality_report.md`。
+- 路径、章节编号、卡片文件、来源映射和结构校验由代码负责；Agent 只负责资料语义提取。
+- 生成后先写入唯一 draft，并通过 canonical validator；用户可确认启用、保留 draft 或放弃并删除 draft。
+- 放弃只删除生成 draft，不修改源目录；失败保留 draft 与 checkpoint。
+
+`/study-build` 的直接启用出口会展示语义警告但不把警告本身作为阻塞；用户也可以保留 draft，随后通过 P5 `/study-revise` 执行独立结构与语义质量门禁。
+
+P4 真实 Pi 人工测试 A、B、C 已全部通过。`p4-smoke-20260714` 从 2 个 Markdown 源文件生成 1 章、2 小节、4 个知识点，来源全部映射；启用后完成 1 题并保存 completed session、attempt 和非空 summary。第二个 `p4-discard-20260714` 构建 job 状态为 `discarded`，没有留下 active Profile。
+
+### Profile 修订闭环
+
+`/study-revise [subjectId]` 当前支持：
+
+- 同时列出 active 和已有 draft；active 会先复制成唯一 revision draft，已有 draft 直接继续，不重复增加 revision。
+- Agent 先输出最小受影响文件计划；含糊反馈必须先提出澄清问题，operations 保持为空。
+- 用户预览计划并确认后，第二个 Agent 只能在计划路径白名单内生成完整文件补丁。
+- 代码在 staging 副本应用全部变更，更新 `updatedAt`，校验成功后原子替换 draft；失败时原 draft 保持不变。
+- 代码检查 section/card 文件引用、重复 ID、难度、题型、source map 路径和 source ID；独立质量 Agent 不能降低代码阻塞项。
+- 有阻塞项时 TUI 不提供启用选项；无阻塞项时可以继续修改、确认启用、保留或放弃。
+- 确认启用前检查 `revisionOf` 与当前 active version，陈旧 draft 不能覆盖新 active。
+- 启用使用 staging 事务，旧 active 按日期归档；放弃只删除 draft，active、archived 和 `_user` 不变。
+- Profile 树中的符号链接被拒绝，Agent 不能修改 `profile.json`、`quality_report.md`、`_user`、active 或 archived。
+
+P5 当前已通过自动测试和真实九图 probe，尚待真实 Pi TUI 人工验收。
+
 ### 手动学习画像
 
 `/study-profile` 当前支持：
@@ -91,6 +124,8 @@ profile_families/{subjectId}/
 - 累计题数、累计正确数、正确率、近期 session 列表由代码合并，Agent 只生成总体概况、掌握证据、薄弱点、待验证主题和建议。
 - 用户先看到画像候选预览；只有明确确认后才写入 `_user/learning_profile.json` 并归档被消费批次。
 - 用户取消、Agent 失败或多批次移动中途失败时，原画像和 pending 记录保持不变；部分移动会回滚。
+
+P3 真实 Pi 人工测试 A、B、C 已全部通过。`demo-review` 画像累计 7 题、2 题正确、5 个 recent session；pending 清空，5 个被消费 batch 连同 attempt/session/summary 完整移入 archived；再次执行 `/study-profile` 会提示没有未消费记录。
 
 ### 任务驱动学习
 
@@ -119,15 +154,19 @@ prepare_question_context
 → discuss_question
 → summarize_session
 → update_learning_profile
+→ build_profile_fragment
+→ plan_profile_revision
+→ revise_profile_draft
+→ review_profile_draft
 ```
 
 验证结果：
 
-- 五张图均到达 `END`。
+- 九张图均到达 `END`。
 - 会话最终为 `completed`。
 - 磁盘存在一份题目记录和非空总结。
 - 出题结果字段类型不合格时，completion validator 成功驳回，Agent 订正后继续。
-- P3 集成后再次运行真实 probe：5 个带输出契约的 Agent Run 全部形成被接受候选，五张图均为 `ok`，会话、attempt、summary 和学习画像候选均正常生成。
+- P5 集成后再次运行真实 probe：9 个带输出契约的 Agent Run 全部形成被接受候选，九张图均为 `ok`；10 次候选提交中 1 次被拒绝后成功订正。学习、画像、Profile 构建、影响计划、受控补丁和独立质量审查均正常生成。
 
 ### 第一轮人工 `/study` E2E
 
@@ -196,7 +235,7 @@ P2 真实 Pi 人工测试已通过：最短 `/study` 能正常完成；原 P1 C 
 ## 当前自动验证
 
 ```text
-npm test                    85/85
+npm test                    112/112
 npm run typecheck           通过
 npm run check:docs          通过
 npm run smoke:extension     真实 pi/RPC 加载通过
@@ -205,8 +244,6 @@ npm run probe:sdk-agent     真实 pi + 模型核心闭环通过
 
 ## 尚未完成或尚未验收
 
-- `/study-profile` 的真实 Pi 确认、写入和归档人工验收。
-- 从 Markdown/txt 自动构建完整 canonical Profile。
 - 基于 active 的资料包语义修订和质量审查图。
 - 10 题以上长会话、compaction、取消、超时和第二模型提供方验证。
 - Agent Run、模型 turn 和底层 HTTP 请求的完整成本观测。

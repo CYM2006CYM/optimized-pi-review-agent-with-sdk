@@ -7,6 +7,10 @@ import type { Attempt, StudySession } from "../src/domain/types.js";
 import {
   asGradeResult,
   asLearningProfileCandidate,
+  asProfileBuildFragment,
+  asProfileRevisionPatch,
+  asProfileRevisionPlan,
+  asProfileRevisionQuality,
   asReviewQuestion,
   createStudyWalkingSkeletonGraphs,
   difficultyFrom,
@@ -17,6 +21,7 @@ import { buildDiscussionAgentInput } from "../src/application/study-discussion.j
 import { buildSessionEvidence } from "../src/domain/session-evidence.js";
 import { DIFFICULTY_POLICIES } from "../src/domain/study-policy.js";
 import { buildLearningProfileEvidence } from "../src/domain/learning-profile-evidence.js";
+import { inspectProfileStructure } from "../src/domain/profile-revision.js";
 
 export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<void> {
   const dataRoot = resolveStudyDataRoot();
@@ -38,6 +43,10 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
   loop.registerGraph(graphs.discussQuestion);
   loop.registerGraph(graphs.summarizeSession);
   loop.registerGraph(graphs.updateLearningProfile);
+  loop.registerGraph(graphs.buildProfileFragment);
+  loop.registerGraph(graphs.planProfileRevision);
+  loop.registerGraph(graphs.reviseProfileDraft);
+  loop.registerGraph(graphs.reviewProfileDraft);
   pi.registerCommand("study-sdk-probe", {
     description: "开发期真实 Agent Run 闭环探针",
     handler: async () => {
@@ -150,6 +159,73 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       });
       if (profiled.status !== "ok") throw new Error(`Learning Profile graph ended with ${profiled.status}`);
       asLearningProfileCandidate(profiled.result);
+      const sourceId = "probe-source-1";
+      const built = await loop.executeGraph(graphs.buildProfileFragment, {
+        source: "command",
+        params: {
+          subjectName: "学习方法 Probe",
+          batchIndex: 1,
+          batchCount: 1,
+          allowedSourceIds: [sourceId],
+          sources: [{
+            source_id: sourceId,
+            path: "learning-methods.md",
+            sha256: "probe-only",
+            content: "# 主动回忆\n\n主动回忆是在不查看资料时先尝试从记忆中提取信息，再核对答案并订正。",
+          }],
+        },
+      });
+      if (built.status !== "ok") throw new Error(`Profile Build graph ended with ${built.status}`);
+      asProfileBuildFragment(built.result, [sourceId]);
+
+      const draft = await profiles.createRevisionDraft("demo-review");
+      const draftFiles = await profiles.listDraftFiles("demo-review");
+      const existingPaths = draftFiles.map((file) => file.path);
+      const feedback = "只在 subject.md 末尾新增一句‘本资料包用于验证安全修订闭环。’，不要修改任何其他内容。";
+      const planned = await loop.executeGraph(graphs.planProfileRevision, {
+        source: "command",
+        params: {
+          feedback,
+          profile: draft,
+          existingPaths,
+          catalog: draftFiles.map((file) => ({ path: file.path, characters: Array.from(file.content).length })),
+          coreFiles: draftFiles.filter((file) => ["subject.md", "knowledge_index.json", "source_map.json", "quality_report.md"].includes(file.path)),
+        },
+      });
+      if (planned.status !== "ok") throw new Error(`Profile Revision Plan graph ended with ${planned.status}`);
+      const plan = asProfileRevisionPlan(planned.result, existingPaths);
+      if (plan.requires_clarification) throw new Error("Profile Revision Plan unexpectedly requested clarification");
+      const fileMap = new Map(draftFiles.map((file) => [file.path, file.content]));
+      const revised = await loop.executeGraph(graphs.reviseProfileDraft, {
+        source: "command",
+        params: {
+          feedback,
+          profile: draft,
+          plan,
+          currentFiles: plan.operations.map((operation) => ({
+            path: operation.path,
+            content: operation.operation === "create" ? null : fileMap.get(operation.path) ?? null,
+          })),
+        },
+      });
+      if (revised.status !== "ok") throw new Error(`Profile Revision graph ended with ${revised.status}`);
+      const revisionPatch = asProfileRevisionPatch(revised.result, plan);
+      await profiles.applyDraftChanges("demo-review", revisionPatch.changes);
+      const revisedFiles = await profiles.listDraftFiles("demo-review");
+      const inspection = inspectProfileStructure(revisedFiles);
+      const reviewed = await loop.executeGraph(graphs.reviewProfileDraft, {
+        source: "command",
+        params: {
+          feedback,
+          plan,
+          patchSummary: revisionPatch.summary,
+          structureInspection: inspection,
+          coreFiles: revisedFiles.filter((file) => ["subject.md", "knowledge_index.json", "source_map.json", "quality_report.md"].includes(file.path)),
+          changedFiles: revisedFiles.filter((file) => plan.operations.some((operation) => operation.path === file.path)),
+        },
+      });
+      if (reviewed.status !== "ok") throw new Error(`Profile Revision Review graph ended with ${reviewed.status}`);
+      asProfileRevisionQuality(reviewed.result);
     },
   });
 }
