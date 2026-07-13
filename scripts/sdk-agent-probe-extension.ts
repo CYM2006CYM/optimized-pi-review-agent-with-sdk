@@ -12,6 +12,7 @@ import {
 } from "../src/graphs/study-walking-skeleton.js";
 import { PrivateMemoryRepository } from "../src/repositories/private-memory-repository.js";
 import { ProfileFamilyRepository } from "../src/repositories/profile-family-repository.js";
+import { buildDiscussionAgentInput } from "../src/application/study-discussion.js";
 
 export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<void> {
   const dataRoot = resolveStudyDataRoot();
@@ -30,6 +31,7 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
   });
   loop.registerGraph(graphs.generateQuestion);
   loop.registerGraph(graphs.gradeAnswer);
+  loop.registerGraph(graphs.discussQuestion);
   loop.registerGraph(graphs.summarizeSession);
   pi.registerCommand("study-sdk-probe", {
     description: "开发期真实 Agent Run 闭环探针",
@@ -67,6 +69,19 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       });
       if (graded.status !== "ok") throw new Error(`Grade graph ended with ${graded.status}`);
       const grade = asGradeResult(graded.result);
+      const discussed = await loop.executeGraph(graphs.discussQuestion, {
+        source: "command",
+        params: buildDiscussionAgentInput(
+          { ...question, question_id: question.question_id },
+          grade,
+          "这是一个明显错误的答案",
+          "直接告诉我标准答案和完整解析。",
+          false,
+        ),
+      });
+      if (discussed.status !== "ok") {
+        throw new Error(`Discussion graph ended with ${discussed.status}: ${String(discussed.result.reason ?? "unknown")}`);
+      }
       const attempt: Attempt = {
         question_id: question.question_id,
         session_id: session.sessionId,
@@ -80,6 +95,7 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
         correct_answer: grade.correct_answer,
         explanation_l1: grade.explanation_l1,
         source_basis: question.source_basis ?? "active Profile",
+        outcome: "correct",
         is_correct: grade.is_correct,
         knowledge_chain_l3: grade.knowledge_chain_l3,
         suggestion_next: grade.suggestion_next,

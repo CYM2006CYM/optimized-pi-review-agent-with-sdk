@@ -30,6 +30,7 @@ const attempt: Attempt = {
   correct_answer: "主动从记忆中提取信息",
   explanation_l1: "通过提取强化记忆",
   source_basis: "cards/active_recall.md",
+  outcome: "correct",
   is_correct: true,
   knowledge_chain_l3: ["提取练习", "反馈"],
   suggestion_next: "继续",
@@ -90,6 +91,23 @@ describe("PrivateMemoryRepository", () => {
     expect(loaded.session.status).toBe("interrupted");
     expect(loaded.attempts).toHaveLength(1);
     expect(loaded.summaryMarkdown).toBeUndefined();
+  });
+
+  it("每题完成后可以在会话仍 running 时同步进度", async () => {
+    const batch = await repository.createPendingBatch(runningSession);
+    await repository.saveAttempt("demo-review", batch.batchId, attempt);
+    await repository.saveRunningSession("demo-review", batch.batchId, {
+      ...runningSession,
+      totalQuestions: 1,
+      correct: 1,
+      updatedAt: "2026-07-13T08:06:00.000Z",
+    });
+
+    const loaded = await repository.loadPendingBatch("demo-review", batch.batchId);
+    expect(loaded.session.status).toBe("running");
+    expect(loaded.session.totalQuestions).toBe(1);
+    expect(loaded.session.correct).toBe(1);
+    expect(loaded.attempts).toEqual([attempt]);
   });
 
   it("画像成功写入后才把选中的 pending 批次归档", async () => {

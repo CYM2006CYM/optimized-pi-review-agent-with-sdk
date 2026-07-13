@@ -63,7 +63,12 @@ try {
   const graphEnds = events.filter((event) => event.type === "graph_end");
   const graphEnd = graphEnds.at(-1);
   const enteredNodes = events.filter((event) => event.type === "node_enter").map((event) => event.nodeId);
-  const requiredNodes = ["prepare_question_context", "generate_question", "grade_answer", "summarize_session"];
+  const eventCount = (type) => events.filter((event) => event.type === type).length;
+  const runKey = (event) => `${event.graphRunId}:${event.scopeId}:${event.agentRunId}`;
+  const contractRuns = new Set(events.filter((event) => event.type === "output_contract.prepared").map(runKey));
+  const acceptedRuns = new Set(events.filter((event) => event.type === "completion.accepted").map(runKey));
+  const contractRunWithoutAccepted = [...contractRuns].filter((key) => !acceptedRuns.has(key));
+  const requiredNodes = ["prepare_question_context", "generate_question", "grade_answer", "discuss_question", "summarize_session"];
   const pendingRoot = join(dataRoot, "profile_families", "demo-review", "_user", "summaries", "pending");
   const batches = await readdir(pendingRoot);
   if (batches.length !== 1) throw new Error(`probe 应产生一个学习记录批次，实际为 ${batches.length}`);
@@ -73,18 +78,22 @@ try {
   const summary = await readFile(join(batchRoot, "summary.md"), "utf8").catch(() => "");
   if (
     exit.code !== 0 ||
-    graphEnds.length !== 3 ||
+    graphEnds.length !== 4 ||
     graphEnds.some((event) => event.status !== "ok") ||
     requiredNodes.some((nodeId) => !enteredNodes.includes(nodeId)) ||
+    contractRuns.size !== 4 ||
+    eventCount("completion.submitted") < 4 ||
+    eventCount("completion.validation_started") < 4 ||
+    contractRunWithoutAccepted.length > 0 ||
     session.status !== "completed" ||
     attempts.length !== 1 ||
     summary.trim() === ""
   ) {
     throw new Error(
-      `probe 未闭环：exit=${exit.code}, signal=${exit.signal ?? "none"}, graphEnds=${JSON.stringify(graphEnds)}, nodes=${enteredNodes.join(",")}, session=${session.status}, attempts=${attempts.length}, summary=${summary.length}\nstdout:\n${stdout.trim()}\nstderr:\n${stderr.trim()}`,
+      `probe 未闭环：exit=${exit.code}, signal=${exit.signal ?? "none"}, graphEnds=${JSON.stringify(graphEnds)}, nodes=${enteredNodes.join(",")}, contractRuns=${contractRuns.size}, submitted=${eventCount("completion.submitted")}, validation=${eventCount("completion.validation_started")}, accepted=${eventCount("completion.accepted")}, contractRunWithoutAccepted=${contractRunWithoutAccepted.join(",")}, session=${session.status}, attempts=${attempts.length}, summary=${summary.length}\nstdout:\n${stdout.trim()}\nstderr:\n${stderr.trim()}`,
     );
   }
-  console.log(`真实 pi Agent probe 通过：${enteredNodes.join(" → ")}；3 张图均到达 END；会话=${session.status}；题目记录=${attempts.length}；总结已保存`);
+  console.log(`真实 pi Agent probe 通过：${enteredNodes.join(" → ")}；4 张图均到达 END；输出契约 Run=${contractRuns.size}；候选提交=${eventCount("completion.submitted")}；候选接受=${eventCount("completion.accepted")}；会话=${session.status}；题目记录=${attempts.length}；总结已保存`);
   if (stdout.trim()) console.log(stdout.trim());
   if (stderr.trim()) console.error(stderr.trim());
 } finally {

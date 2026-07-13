@@ -33,7 +33,7 @@ describe("工程骨架", () => {
   it("依赖声明了 pi-loop-graph-sdk", async () => {
     const pkg = await import("../package.json", { with: { type: "json" } });
     expect(pkg.default.dependencies["pi-loop-graph-sdk"]).toBe(
-      "git+https://github.com/0liveiraaa/pi-loop-graph-sdk.git#0a80dd08f163df9ecc2089a3ab7d426b1bb883b3",
+      "github:0liveiraaa/pi-loop-graph-sdk#d9106b9",
     );
   });
 
@@ -86,6 +86,7 @@ describe("领域类型", () => {
       correct_answer: "A",
       explanation_l1: "解释",
       source_basis: "来源",
+      outcome: "correct" as const,
       is_correct: true,
       knowledge_chain_l3: [],
       suggestion_next: "继续",

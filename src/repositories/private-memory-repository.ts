@@ -119,6 +119,15 @@ export class PrivateMemoryRepository {
     await writeJsonAtomic(resolve(batch.directory, "attempts", `${attempt.question_id}.json`), attempt);
   }
 
+  async saveRunningSession(subjectId: string, batchId: string, runningSession: StudySession): Promise<void> {
+    const batch = await this.loadPendingBatch(subjectId, batchId);
+    if (runningSession.sessionId !== batch.session.sessionId || runningSession.subjectId !== subjectId) {
+      throw new Error("Running session does not match its learning record batch");
+    }
+    if (runningSession.status !== "running") throw new Error("Progress updates require running status");
+    await writeJsonAtomic(resolve(batch.directory, "session.json"), runningSession);
+  }
+
   async completeSession(
     subjectId: string,
     batchId: string,
@@ -131,8 +140,15 @@ export class PrivateMemoryRepository {
     }
     if (completedSession.status !== "completed") throw new Error("Normal completion must use completed status");
     if (summaryMarkdown.trim() === "") throw new Error("Normal completion requires a non-empty learning summary");
-    await writeTextAtomic(resolve(batch.directory, "summary.md"), summaryMarkdown);
-    await writeJsonAtomic(resolve(batch.directory, "session.json"), completedSession);
+    const summaryPath = resolve(batch.directory, "summary.md");
+    await writeTextAtomic(summaryPath, summaryMarkdown);
+    try {
+      await writeJsonAtomic(resolve(batch.directory, "session.json"), completedSession);
+    } catch (error) {
+      if (batch.summaryMarkdown === undefined) await rm(summaryPath, { force: true });
+      else await writeTextAtomic(summaryPath, batch.summaryMarkdown);
+      throw error;
+    }
   }
 
   async interruptSession(subjectId: string, batchId: string, interruptedSession: StudySession): Promise<void> {

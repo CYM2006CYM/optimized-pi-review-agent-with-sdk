@@ -3,7 +3,6 @@ import { resolve } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import {
   createJsonlTraceSink,
-  createLoopGraphExtension,
   type GraphRunResult,
 } from "pi-loop-graph-sdk";
 import { resolveStudyDataRoot } from "../config/data-paths.js";
@@ -22,8 +21,16 @@ import {
   createStudyWalkingSkeletonGraphs,
   difficultyFrom,
 } from "../graphs/study-walking-skeleton.js";
+import { createIsolatedGraphExecutor } from "../graphs/isolated-graph-executor.js";
 import { PrivateMemoryRepository } from "../repositories/private-memory-repository.js";
 import { ProfileFamilyRepository } from "../repositories/profile-family-repository.js";
+import {
+  StudyTuiGateway,
+  type QuestionViewModel,
+  type QuestionViewType,
+} from "../tui/study-tui-gateway.js";
+import { buildDiscussionAgentInput } from "../application/study-discussion.js";
+import { executeOptionalDiscussion } from "../application/optional-discussion.js";
 
 const DIFFICULTIES: Array<{ label: string; value: DifficultyLevel }> = [
   { label: "S-R · 基础记忆", value: "S-R" },
@@ -50,18 +57,21 @@ function selectedValue<T>(label: string | undefined, options: Array<{ label: str
 }
 
 function requireSuccessfulGraph(result: GraphRunResult): Record<string, unknown> {
-  if (result.status !== "ok") throw new Error(`图 ${result.graphId} 未正常完成（${result.status}）`);
+  if (result.status !== "ok") {
+    const reason = typeof result.result.reason === "string" ? `：${result.result.reason}` : "";
+    throw new Error(`图 ${result.graphId} 未正常完成（${result.status}）${reason}`);
+  }
   return result.result;
-}
-
-function renderQuestion(question: ReturnType<typeof asReviewQuestion>): string {
-  const options = question.options?.map((option, index) => `${String.fromCharCode(65 + index)}. ${option}`).join("\n");
-  return options ? `${question.question_text}\n\n${options}` : question.question_text;
 }
 
 function harderDifficulty(current: DifficultyLevel): DifficultyLevel {
   const values = DIFFICULTIES.map((option) => option.value);
   return values[Math.min(values.indexOf(current) + 1, values.length - 1)] ?? current;
+}
+
+function questionViewType(type: QuestionType): QuestionViewType {
+  if (type === "multi_choice") throw new Error("当前学习界面尚未开放多选题");
+  return type;
 }
 
 export default async function studyHelperExtension(pi: ExtensionAPI): Promise<void> {
@@ -73,14 +83,7 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
   const profiles = new ProfileFamilyRepository({ dataRoot });
   const memory = new PrivateMemoryRepository({ dataRoot });
   const graphs = createStudyWalkingSkeletonGraphs(profiles);
-  const loop = createLoopGraphExtension(pi, {
-    traceSink: createJsonlTraceSink(tracePath),
-    limits: { rootMaxSteps: 10, agentRunTimeoutMs: 300_000 },
-  });
-  loop.registerGraph(graphs.generateQuestion);
-  loop.registerGraph(graphs.gradeAnswer);
-  loop.registerGraph(graphs.discussQuestion);
-  loop.registerGraph(graphs.summarizeSession);
+  const traceSink = createJsonlTraceSink(tracePath);
 
   pi.registerCommand("study", {
     description: "启动一次任务驱动学习会话",
@@ -92,8 +95,13 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
 
       let batchId: string | undefined;
       let session: StudySession | undefined;
+      const tui = new StudyTuiGateway(ctx.ui);
       ctx.ui.setStatus("pi-study-helper", "正在准备学习会话…");
       try {
+        const executeGraph = createIsolatedGraphExecutor(ctx, {
+          traceSink,
+          limits: { rootMaxSteps: 10, agentRunTimeoutMs: 300_000 },
+        });
         await profiles.seedDemoProfile();
         const activeProfiles = await profiles.listActiveProfiles();
         if (activeProfiles.length === 0) {
@@ -147,34 +155,45 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
         let shouldEnd = false;
         while (!shouldEnd) {
           ctx.ui.setStatus("pi-study-helper", "正在依据资料生成题目…");
-          const generated = asReviewQuestion(requireSuccessfulGraph(await loop.executeGraph(
+          const generated = asReviewQuestion(requireSuccessfulGraph(await executeGraph(
             graphs.generateQuestion,
             {
-              source: "command",
-              params: {
-                subjectId,
-                scopeId: currentScope.id,
-                difficulty: currentDifficulty,
-                questionType,
-                mode,
-              },
+              subjectId,
+              scopeId: currentScope.id,
+              difficulty: currentDifficulty,
+              questionType,
+              mode,
             },
           )));
           const question = { ...generated, question_id: crypto.randomUUID() };
           const answerHistory: NonNullable<Attempt["answer_history"]> = [];
           const clarifiedPoints: string[] = [];
           const lingeringQuestions: string[] = [];
-          let finalAnswer = "（用户放弃本题）";
+          let finalAnswer = "";
           let grade: GradeResult | undefined;
+          let outcome: Attempt["outcome"] | undefined;
 
-          const discuss = async (lastGrade: GradeResult | undefined): Promise<void> => {
+          const discuss = async (lastGrade: GradeResult | undefined, revealAnswer: boolean): Promise<void> => {
             const userMessage = await ctx.ui.input("你想讨论什么？", "输入对题目、答案或解析的疑问");
             if (userMessage === undefined || userMessage.trim() === "") return;
             ctx.ui.setStatus("pi-study-helper", "正在讨论这道题…");
-            const discussion = requireSuccessfulGraph(await loop.executeGraph(
+            const discussionInput = buildDiscussionAgentInput(
+              question,
+              lastGrade,
+              finalAnswer,
+              userMessage,
+              revealAnswer,
+            );
+            const discussionRun = await executeOptionalDiscussion(
+              executeGraph,
               graphs.discussQuestion,
-              { source: "command", params: { question, grade: lastGrade ?? {}, userMessage } },
-            ));
+              discussionInput,
+            );
+            if (discussionRun.status === "unavailable") {
+              ctx.ui.notify("讨论暂时没有生成可用回复，请继续作答或稍后重试。", "warning");
+              return;
+            }
+            const discussion = discussionRun.result;
             const reply = String(discussion.reply ?? "").trim();
             if (reply) ctx.ui.notify(reply, "info");
             if (Array.isArray(discussion.clarified_points)) {
@@ -185,27 +204,44 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
             }
           };
 
-          ctx.ui.notify(renderQuestion(question), "info");
+          const baseQuestionView: QuestionViewModel = {
+            questionId: question.question_id,
+            questionNumber: session.totalQuestions + 1,
+            scope: currentScope.label,
+            mode,
+            difficulty: difficultyFrom(question.difficulty ?? currentDifficulty),
+            type: questionViewType(question.type),
+            questionText: question.question_text,
+            options: question.options,
+            phase: "first_attempt",
+            attemptNumber: 1,
+          };
+
+          let currentQuestionView = baseQuestionView;
           while (!grade?.is_correct) {
-            const answer = await ctx.ui.input("请输入答案", "输入 /giveup 可放弃本题");
-            if (answer === undefined) throw new Error("用户取消了答题输入");
-            if (answer.trim() === "/giveup") {
+            ctx.ui.setStatus(
+              "pi-study-helper",
+              currentQuestionView.phase === "revision" ? "等待订正答案…" : "等待作答…",
+            );
+            const answerAction = await tui.collectAnswer(currentQuestionView);
+            if (answerAction.kind === "cancelled") throw new Error("用户取消了答题输入");
+            if (answerAction.kind === "gave_up") {
+              outcome = "gave_up";
               grade = {
                 is_correct: false,
                 correct_answer: question.correct_answer ?? "请查看解析",
                 explanation_l1: question.explanation_l1 ?? "本题已放弃。",
                 knowledge_chain_l3: question.related_knowledge_chain ?? [],
                 suggestion_next: "阅读解析并完成题目消化",
-                grading: "用户主动放弃本题。",
+                grading: "用户通过明确操作放弃本题。",
               };
               break;
             }
-            finalAnswer = answer.trim();
-            if (!finalAnswer) continue;
+            finalAnswer = answerAction.answer;
             ctx.ui.setStatus("pi-study-helper", "正在检查答案…");
-            grade = asGradeResult(requireSuccessfulGraph(await loop.executeGraph(
+            grade = asGradeResult(requireSuccessfulGraph(await executeGraph(
               graphs.gradeAnswer,
-              { source: "command", params: { question, userAnswer: finalAnswer } },
+              { question, userAnswer: finalAnswer },
             )));
             answerHistory.push({
               answer: finalAnswer,
@@ -213,18 +249,27 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
               grading: grade.grading,
               timestamp: new Date().toISOString(),
             });
-            if (grade.is_correct) break;
-            ctx.ui.notify(`回答需要订正\n\n${grade.grading}`, "warning");
-            const retryAction = await ctx.ui.select("接下来怎么做？", ["再次作答", "讨论这道题", "放弃并看解析"]);
-            if (!retryAction) throw new Error("用户取消了答题流程");
-            if (retryAction === "讨论这道题") await discuss(grade);
-            if (retryAction === "放弃并看解析") {
-              finalAnswer = "（用户在订正后放弃本题）";
-              grade = { ...grade, is_correct: false, grading: `${grade.grading}\n用户随后选择放弃。` };
+            if (grade.is_correct) {
+              outcome = "correct";
               break;
             }
+            ctx.ui.notify("回答尚未完全正确。你可以再次作答、讨论这道题，或明确放弃并查看解析。", "warning");
+            const retryAction = await ctx.ui.select("接下来怎么做？", ["再次作答", "讨论这道题", "放弃并看解析"]);
+            if (!retryAction) throw new Error("用户取消了答题流程");
+            if (retryAction === "讨论这道题") await discuss(grade, false);
+            if (retryAction === "放弃并看解析") {
+              outcome = "gave_up";
+              grade = { ...grade, is_correct: false, grading: `${grade.grading}\n用户随后通过明确操作选择放弃。` };
+              break;
+            }
+            currentQuestionView = {
+              ...baseQuestionView,
+              phase: "revision",
+              attemptNumber: answerHistory.length + 1,
+            };
+            tui.updateRevision(currentQuestionView);
           }
-          if (!grade) throw new Error("题目没有形成判题结果");
+          if (!grade || !outcome) throw new Error("题目没有形成确定的业务结果");
 
           const attempt: Attempt = {
             question_id: question.question_id,
@@ -240,10 +285,22 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
             correct_answer: grade.correct_answer,
             explanation_l1: grade.explanation_l1,
             source_basis: question.source_basis ?? "active Profile",
+            outcome,
             is_correct: grade.is_correct,
             knowledge_chain_l3: grade.knowledge_chain_l3,
             suggestion_next: grade.suggestion_next,
           };
+          await memory.saveAttempt(subjectId, batchId, attempt);
+          session = {
+            ...session,
+            scope: currentScope.label,
+            totalQuestions: session.totalQuestions + 1,
+            correct: session.correct + (grade.is_correct ? 1 : 0),
+            incorrect: session.incorrect + (grade.is_correct ? 0 : 1),
+            updatedAt: new Date().toISOString(),
+          };
+          await memory.saveRunningSession(subjectId, batchId, session);
+          attempts.push(attempt);
           ctx.ui.notify(
             `${grade.is_correct ? "回答正确" : "本题已结束"}\n\n解析：${grade.explanation_l1}\n\n建议：${grade.suggestion_next}`,
             grade.is_correct ? "info" : "warning",
@@ -253,8 +310,9 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
             const digestAction = await ctx.ui.select("题目消化", ["已理解，进入功能菜单", "继续讨论这道题"]);
             if (!digestAction) throw new Error("用户取消了题目消化流程");
             if (digestAction === "已理解，进入功能菜单") break;
-            await discuss(grade);
+            await discuss(grade, true);
           }
+          tui.clearQuestion();
 
           if (clarifiedPoints.length > 0 || lingeringQuestions.length > 0) {
             attempt.discussion_summary = {
@@ -263,18 +321,8 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
               user_self_correction: grade.is_correct && answerHistory.length > 1 ? finalAnswer : null,
               lingering_questions: lingeringQuestions,
             };
+            await memory.saveAttempt(subjectId, batchId, attempt);
           }
-
-          await memory.saveAttempt(subjectId, batchId, attempt);
-          attempts.push(attempt);
-          session = {
-            ...session,
-            scope: currentScope.label,
-            totalQuestions: session.totalQuestions + 1,
-            correct: session.correct + (grade.is_correct ? 1 : 0),
-            incorrect: session.incorrect + (grade.is_correct ? 0 : 1),
-            updatedAt: new Date().toISOString(),
-          };
 
           let nextQuestion = false;
           while (!nextQuestion && !shouldEnd) {
@@ -312,9 +360,9 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
             }
             if (action === "查看当前学习总结") {
               ctx.ui.setStatus("pi-study-helper", "正在生成当前学习总结…");
-              const interim = requireSuccessfulGraph(await loop.executeGraph(
+              const interim = requireSuccessfulGraph(await executeGraph(
                 graphs.summarizeSession,
-                { source: "command", params: { session, attempts } },
+                { session, attempts },
               ));
               ctx.ui.notify(String(interim.summary_markdown ?? "暂无总结"), "info");
             }
@@ -323,16 +371,17 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
         }
 
         ctx.ui.setStatus("pi-study-helper", "正在生成本次学习情况总结…");
-        const summaryResult = requireSuccessfulGraph(await loop.executeGraph(
+        const summaryResult = requireSuccessfulGraph(await executeGraph(
           graphs.summarizeSession,
-          { source: "command", params: { session, attempts } },
+          { session, attempts },
         ));
         const summaryMarkdown = String(summaryResult.summary_markdown ?? "").trim();
         if (!summaryMarkdown) throw new Error("总结节点没有生成可保存的学习情况总结");
 
         const endedAt = new Date().toISOString();
-        session = { ...session, status: "completed", updatedAt: endedAt, endedAt };
-        await memory.completeSession(subjectId, batchId, session, `${summaryMarkdown}\n`);
+        const completedSession: StudySession = { ...session, status: "completed", updatedAt: endedAt, endedAt };
+        await memory.completeSession(subjectId, batchId, completedSession, `${summaryMarkdown}\n`);
+        session = completedSession;
         ctx.ui.notify(`学习会话已完成并保存总结。\n\n${summaryMarkdown}`, "info");
       } catch (error) {
         if (session && batchId && session.status === "running") {
@@ -347,6 +396,7 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
         const message = error instanceof Error ? error.message : String(error);
         ctx.ui.notify(`学习会话未正常完成：${message}`, "error");
       } finally {
+        tui.clearQuestion();
         ctx.ui.setStatus("pi-study-helper", undefined);
       }
     },

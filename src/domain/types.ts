@@ -129,6 +129,8 @@ export interface Attempt {
   correct_answer: string;
   explanation_l1: string;
   source_basis: string;
+  /** 本题的确定性业务结果；只有代码识别到明确放弃动作时才是 gave_up。 */
+  outcome: "correct" | "gave_up";
   is_correct: boolean;
   discussion_summary?: DiscussionSummary;
   knowledge_chain_l3: string[];
