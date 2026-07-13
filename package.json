@@ -1,0 +1,33 @@
+{
+  "name": "pi-study-helper",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Pi Study Helper — 以回路图组织学习活动、复习反馈与资料演进的主产品",
+  "keywords": ["pi-package"],
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  },
+  "type": "module",
+  "main": "./src/extension/index.ts",
+  "pi": {
+    "extensions": ["./src/extension/index.ts"]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit && tsc -p tsconfig.test.json",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "pi-loop-graph-sdk": "file:../pi-loop-graph-extension",
+    "typebox": "^1.3.5"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-tui": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "latest",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
