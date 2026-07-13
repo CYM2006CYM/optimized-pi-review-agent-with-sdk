@@ -22,7 +22,7 @@ Pi Study Helper 已经不再是工程骨架。当前主链路为：
 → 代码保存总结并把会话标记为 completed
 ```
 
-交互式 `/study` 已完成第一轮真实人工 E2E。持久化、图执行、schema 拒绝后重试和中断状态均有真实证据，但题目展示与 Agent 输出隔离存在发布阻塞，因此仍不能称为里程碑一验收完成。
+交互式 `/study` 的 P0 人工门禁已经全部通过：题目稳定展示、Agent 内部输出隔离、确定性放弃、取消清理、订正前讨论和 `chapter_study` mode 均有真实 TUI 证据。当前进入 P1 模式、难度与总结语义验收。
 
 ## 已实现
 
@@ -86,13 +86,16 @@ profile_families/{subjectId}/
 `/study` 当前支持：
 
 - 选择 Profile、章节范围、三种学习方式、五档难度和题型。
-- active Profile 资料的代码侧读取和上下文裁剪。
+- active Profile 资料的代码侧读取，并按整章、单卡片或单小节裁剪 Agent 上下文。
+- `practice` 直接出题；`card_practice` 先显示卡片回忆提示，可选择看正文；`chapter_study` 必须先分页浏览小节材料再出题。
 - Agent 出题、语义判题、题目讨论和会话总结。
 - 错误后再次作答、讨论后继续作答、主动放弃。
 - 解析展示和题目消化确认。
-- 下一题、提高难度、更换章节/知识点、查看材料、查看当前总结、结束并保存总结。
+- 下一题、提高难度、按 mode 更换章节/卡片/小节、分页查看当前目标材料、查看当前总结、结束并保存总结。
 - 每题使用代码生成的唯一 ID，避免模型重复 ID 覆盖历史记录。
-- 最终总结从本次结构化 attempts 生成，不依赖模型记住完整对话。
+- 每个 Attempt 保存实际 `scope` 和 `target`，Session 保存按进入顺序记录的 `scopeHistory`。
+- 代码把 session/attempts 投影成受控 `SessionEvidence`；总结 Agent 不接收原始答案、答案历史、自我订正、参考答案、解析或来源。
+- `correct` 才产生掌握证据；`gave_up` 只产生“未获得掌握证据”的主题，不能自动改写为薄弱点。
 
 ### 真实 pi 核心 probe
 
@@ -102,16 +105,17 @@ profile_families/{subjectId}/
 prepare_question_context
 → generate_question
 → grade_answer
+→ discuss_question
 → summarize_session
 ```
 
 验证结果：
 
-- 三张图均到达 `END`。
+- 四张图均到达 `END`。
 - 会话最终为 `completed`。
 - 磁盘存在一份题目记录和非空总结。
 - 出题结果字段类型不合格时，completion validator 成功驳回，Agent 订正后继续。
-- 更新 SDK 后再次运行真实 probe：3 个带输出契约的 Agent Run 全部至少形成一个被接受候选，三张图均为 `ok`，会话、attempt 和 summary 正常落盘。
+- P1 集成后再次运行真实 probe：4 个带输出契约的 Agent Run 全部形成被接受候选，四张图均为 `ok`，会话、attempt 和 summary 正常落盘。
 
 ### 第一轮人工 `/study` E2E
 
@@ -146,14 +150,41 @@ prepare_question_context
 - 题目形成 `outcome` 后立即保存 attempt 和 running session 进度；之后即使在题目消化或讨论中取消，已完成题目也不会丢失。
 - 出题完成校验会拒绝与用户选择不一致的难度/题型；当前未开放的多选题不会流入 TUI。判断题选项由代码固定，选择题保存规范选项文本而不是 UI 字母前缀。
 
-第二轮人工测试数据位于 `.manual-test/20260713-p0-retest`。A、D 已通过；C 的明确放弃、解析和总结行为通过，但对应 completed session 实际保存为 `card_practice`，不是清单要求的 `chapter_study`，因此章节模式仍未验收。B 在订正前讨论时失败：讨论 Agent 准备了输出契约，但没有提交节点结果，导致讨论图 failed 并中断会话。
+第二轮人工测试数据位于 `.manual-test/20260713-p0-retest`。初测中 B 的讨论 Agent 没有提交节点结果，导致讨论图 failed；其余题目展示、隔离、放弃、取消和落盘行为符合预期。
 
-针对 B 已增加可选讨论容错：结构化完成要求提升为最高优先级；首次失败自动在新隔离会话中重试一次；两次失败只显示讨论暂不可用并返回当前题目，不再中断学习会话。真实模型 probe 已使用“直接告诉我标准答案和完整解析”完成出题、判题、订正前讨论和总结四图闭环。当前需复测 B，并在 C 中确认实际选择 `chapter_study`。
+针对 B 已增加可选讨论容错：结构化完成要求提升为最高优先级；首次失败自动在新隔离会话中重试一次；两次失败只显示讨论暂不可用并返回当前题目，不再中断学习会话。用户复测确认 B 与真正的 `chapter_study` 用例均通过，P0 退出条件已经满足。
+
+### P1 模式、难度与证据语义
+
+当前代码和自动测试已经证明：
+
+- 五档难度有代码维护的固定学习目标和出题约束；Agent 不再自行解释缩写。
+- 三种 mode 有不同的目标选择、材料展示和推进门禁，不再只是提示词参数。
+- 卡片题只能使用当前卡片知识点；小节题只能使用当前小节的资料和知识点集合。
+- Profile 材料展示会移除内部路径、frontmatter、出题提示和来源章节，并通过最多十行的 MaterialView 分页。
+- Attempt 保存题目级 `scope_id/scope_label` 与 `target_kind/target_id/target_label`；跨章节时 Session 追加 `scopeHistory`，不覆盖历史。
+- 总结输入由代码生成 `SessionEvidence`，对字符串做长度限制、数组去重限量和脏数据一致性校验。
+
+P1 人工数据 `.manual-test/20260713-p1` 已证明三种 mode、卡片/小节目标切换、Attempt target 和跨章节 `scopeHistory` 正常。C 在总结第一次 schema 拒绝后的订正阶段被提前关闭，因此保留为 `running` 且无 summary；该记录现在可由 P2 的 `/study-recover` 补全。
+
+### P2 学习控制器与恢复
+
+当前代码和自动测试已经证明：
+
+- `/study` 的完整业务循环已从 extension handler 提取为 `StudySessionController`；extension 只负责 Pi 状态检查、图执行器装配和命令注册。
+- 首次答对、错误重答、明确放弃、答题取消、最终总结失败和 attempt 持久化失败都有控制器级状态测试。
+- 最终总结或其他题后步骤失败时，已保存 attempt 保持不变，会话标记为 `interrupted`。
+- 新增 `/study-recover`：可列出 active Profile 下遗留的 `running` 会话，选择补生成总结并完成，或标记为中断。
+- 补总结失败不会消费或中断原记录，session 保持 `running`，可以稍后重试。
+- 没有题目记录的 running 会话可以直接标记中断，不需要模型。
+- Pi 启动时发现遗留 running 会话会显示数量和 `/study-recover` 提示。
+
+P2 真实 Pi 人工测试已通过：最短 `/study` 能正常完成；原 P1 C 的两题跨范围 `chapter_study` batch 已通过 `/study-recover` 补写 summary 并从 running 改为 completed；再次执行恢复命令会正确提示没有未完成会话。
 
 ## 当前自动验证
 
 ```text
-npm test                    44/44
+npm test                    77/77
 npm run typecheck           通过
 npm run check:docs          通过
 npm run smoke:extension     真实 pi/RPC 加载通过
@@ -162,11 +193,6 @@ npm run probe:sdk-agent     真实 pi + 模型核心闭环通过
 
 ## 尚未完成或尚未验收
 
-- Agent Run 输出隔离、QuestionView 和确定性 `gave_up` 的真实 TUI 人工复测。
-- 完整学习会话控制器与自动状态机 E2E。
-- `chapter_study` 的真实人工 E2E，以及三种学习方式的代码级行为差异。
-- 固定难度 rubric、证据化总结和跨范围学习的 `scope_history`/逐题范围。
-- 启动时处理遗留 running 会话和补总结入口。
 - 用户手动触发的学习画像生成图。
 - 从 Markdown/txt 自动构建完整 canonical Profile。
 - 基于 active 的资料包语义修订和质量审查图。

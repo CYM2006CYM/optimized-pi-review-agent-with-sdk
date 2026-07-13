@@ -67,6 +67,12 @@ export interface StudySession {
   mode: ReviewMode;
   /** 复习范围 */
   scope: string;
+  /** 本次会话实际进入过的范围，按进入顺序保存。 */
+  scopeHistory: Array<{
+    scopeId: string;
+    scopeLabel: string;
+    enteredAt: string;
+  }>;
   /** 已做题数 */
   totalQuestions: number;
   /** 正确数 */
@@ -112,6 +118,11 @@ export interface ReviewQuestion {
 export interface Attempt {
   question_id: string;
   session_id: string;
+  scope_id: string;
+  scope_label: string;
+  target_kind: "scope" | "card" | "section";
+  target_id: string;
+  target_label: string;
   knowledge_points: string[];
   difficulty: DifficultyLevel;
   type: QuestionType;

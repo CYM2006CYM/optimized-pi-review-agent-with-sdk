@@ -77,6 +77,11 @@ describe("领域类型", () => {
     const attempt = {
       question_id: "q1",
       session_id: "s1",
+      scope_id: "chapter:1",
+      scope_label: "第 1 章",
+      target_kind: "scope" as const,
+      target_id: "chapter:1",
+      target_label: "第 1 章",
       knowledge_points: ["kp1"],
       difficulty: "S-U" as const,
       type: "choice" as const,

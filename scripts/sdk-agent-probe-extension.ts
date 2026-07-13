@@ -13,6 +13,8 @@ import {
 import { PrivateMemoryRepository } from "../src/repositories/private-memory-repository.js";
 import { ProfileFamilyRepository } from "../src/repositories/profile-family-repository.js";
 import { buildDiscussionAgentInput } from "../src/application/study-discussion.js";
+import { buildSessionEvidence } from "../src/domain/session-evidence.js";
+import { DIFFICULTY_POLICIES } from "../src/domain/study-policy.js";
 
 export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<void> {
   const dataRoot = resolveStudyDataRoot();
@@ -43,6 +45,11 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
         status: "running",
         mode: "practice",
         scope: "第 1 章 · 记忆与练习",
+        scopeHistory: [{
+          scopeId: "chapter:1",
+          scopeLabel: "第 1 章 · 记忆与练习",
+          enteredAt: startedAt,
+        }],
         totalQuestions: 0,
         correct: 0,
         incorrect: 0,
@@ -55,6 +62,8 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
         params: {
           subjectId: "demo-review",
           scopeId: "chapter:1",
+          targetKind: "scope",
+          targetId: "chapter:1",
           difficulty: "S-U",
           questionType: "short_answer",
           mode: "practice",
@@ -62,13 +71,15 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       });
       if (generated.status !== "ok") throw new Error(`Question graph ended with ${generated.status}`);
       const question = asReviewQuestion(generated.result);
-      const userAnswer = "主动回忆是先不看资料，尝试从记忆中提取答案，再根据反馈订正。";
+      const userAnswer = question.correct_answer
+        ?? "主动回忆是先不看资料，尝试从记忆中提取答案，再根据反馈订正。";
       const graded = await loop.executeGraph(graphs.gradeAnswer, {
         source: "command",
         params: { question, userAnswer },
       });
       if (graded.status !== "ok") throw new Error(`Grade graph ended with ${graded.status}`);
       const grade = asGradeResult(graded.result);
+      if (!grade.is_correct) throw new Error("Probe answer was not accepted as correct");
       const discussed = await loop.executeGraph(graphs.discussQuestion, {
         source: "command",
         params: buildDiscussionAgentInput(
@@ -85,6 +96,11 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       const attempt: Attempt = {
         question_id: question.question_id,
         session_id: session.sessionId,
+        scope_id: "chapter:1",
+        scope_label: "第 1 章 · 记忆与练习",
+        target_kind: "scope",
+        target_id: "chapter:1",
+        target_label: "第 1 章 · 记忆与练习",
         knowledge_points: question.knowledge_points ?? [],
         difficulty: difficultyFrom(question.difficulty ?? "S-U"),
         type: question.type,
@@ -110,7 +126,11 @@ export default async function sdkAgentProbeExtension(pi: ExtensionAPI): Promise<
       };
       const summarized = await loop.executeGraph(graphs.summarizeSession, {
         source: "command",
-        params: { session, attempts: [attempt] },
+        params: {
+          evidence: buildSessionEvidence(session, [attempt]),
+          difficultyCatalog: DIFFICULTY_POLICIES,
+          summaryKind: "final",
+        },
       });
       if (summarized.status !== "ok") throw new Error(`Summary graph ended with ${summarized.status}`);
       const summaryMarkdown = String(summarized.result.summary_markdown ?? "").trim();

@@ -11,6 +11,11 @@ const runningSession: StudySession = {
   status: "running",
   mode: "practice",
   scope: "第 1 章",
+  scopeHistory: [{
+    scopeId: "chapter:1",
+    scopeLabel: "第 1 章",
+    enteredAt: "2026-07-13T08:00:00.000Z",
+  }],
   totalQuestions: 0,
   correct: 0,
   incorrect: 0,
@@ -21,6 +26,11 @@ const runningSession: StudySession = {
 const attempt: Attempt = {
   question_id: "q-1",
   session_id: "session-1",
+  scope_id: "chapter:1",
+  scope_label: "第 1 章",
+  target_kind: "scope",
+  target_id: "chapter:1",
+  target_label: "第 1 章",
   knowledge_points: ["active-recall"],
   difficulty: "S-U",
   type: "short_answer",

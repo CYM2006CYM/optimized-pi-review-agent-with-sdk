@@ -7,7 +7,8 @@ import type {
   Node,
 } from "pi-loop-graph-sdk";
 import type { DifficultyLevel, GradeResult, ReviewQuestion } from "../domain/types.js";
-import { loadActiveStudyContext } from "../domain/study-profile.js";
+import { loadActiveStudyTargetContext, type StudyTargetKind } from "../domain/study-profile.js";
+import { getDifficultyPolicy, getReviewModePolicy } from "../domain/study-policy.js";
 import type { ProfileFamilyRepository } from "../repositories/profile-family-repository.js";
 
 const questionOutputSchema = {
@@ -63,11 +64,12 @@ const summaryOutputSchema = {
   type: "object",
   properties: {
     summary_markdown: { type: "string" },
-    weak_points: { type: "array", items: { type: "string" } },
-    strengths: { type: "array", items: { type: "string" } },
+    observed_facts: { type: "array", items: { type: "string" } },
+    mastery_evidence: { type: "array", items: { type: "string" } },
+    unverified_topics: { type: "array", items: { type: "string" } },
     recommendations: { type: "array", items: { type: "string" } },
   },
-  required: ["summary_markdown", "weak_points", "strengths", "recommendations"],
+  required: ["summary_markdown", "observed_facts", "mastery_evidence", "unverified_topics", "recommendations"],
   additionalProperties: false,
 };
 
@@ -113,6 +115,8 @@ export function validateQuestionResultForRequest(
   result: Record<string, unknown>,
   expectedDifficulty: string,
   expectedType: string,
+  allowedKnowledgePointIds: readonly string[] = [],
+  exactKnowledgePointId?: string,
 ): CompletionValidationResult {
   const base = validateQuestionResult(result);
   if (!base.isValid) return base;
@@ -121,6 +125,15 @@ export function validateQuestionResultForRequest(
   }
   if (result.type !== expectedType) {
     return { isValid: false, reason: `type 必须与用户选择一致：${expectedType}` };
+  }
+  const actualKnowledgePoints = result.knowledge_points as string[];
+  if (allowedKnowledgePointIds.length > 0 && actualKnowledgePoints.some((item) => !allowedKnowledgePointIds.includes(item))) {
+    return { isValid: false, reason: "knowledge_points 超出当前学习目标" };
+  }
+  if (exactKnowledgePointId !== undefined && (
+    actualKnowledgePoints.length !== 1 || actualKnowledgePoints[0] !== exactKnowledgePointId
+  )) {
+    return { isValid: false, reason: `卡片练习必须只考查当前卡片：${exactKnowledgePointId}` };
   }
   return { isValid: true };
 }
@@ -138,7 +151,7 @@ export function validateGradeResult(result: Record<string, unknown>): Completion
 
 export function validateSummaryResult(result: Record<string, unknown>): CompletionValidationResult {
   if (!validString(result.summary_markdown)) return { isValid: false, reason: "summary_markdown 不能为空" };
-  for (const key of ["weak_points", "strengths", "recommendations"]) {
+  for (const key of ["observed_facts", "mastery_evidence", "unverified_topics", "recommendations"]) {
     if (!Array.isArray(result[key]) || (result[key] as unknown[]).some((item) => typeof item !== "string")) {
       return { isValid: false, reason: `${key} 必须是字符串数组` };
     }
@@ -194,7 +207,16 @@ export function createStudyWalkingSkeletonGraphs(
     async execute(_instance, input) {
       const subjectId = String(input.data.subjectId ?? "");
       const scopeId = String(input.data.scopeId ?? "");
-      const context = await loadActiveStudyContext(profiles, subjectId, scopeId);
+      const targetKind = String(input.data.targetKind ?? "scope") as StudyTargetKind;
+      if (!(["scope", "card", "section"] as const).includes(targetKind)) {
+        throw new Error(`Unsupported study target kind: ${targetKind}`);
+      }
+      const targetId = String(input.data.targetId ?? scopeId);
+      const difficulty = String(input.data.difficulty ?? "S-U");
+      const mode = String(input.data.mode ?? "practice");
+      const context = await loadActiveStudyTargetContext(profiles, subjectId, scopeId, targetKind, targetId);
+      const difficultyPolicy = getDifficultyPolicy(difficulty);
+      const modePolicy = getReviewModePolicy(mode);
       return {
         nodeId: "prepare_question_context",
         status: "ok",
@@ -203,10 +225,13 @@ export function createStudyWalkingSkeletonGraphs(
           profileName: context.profile.name,
           scopeId,
           scopeLabel: context.scope.label,
-          knowledgePointIds: context.scope.knowledgePointIds,
-          difficulty: String(input.data.difficulty ?? "S-U"),
+          target: context.target,
+          knowledgePointIds: context.target.knowledgePointIds,
+          difficulty,
+          difficultyPolicy,
           questionType: String(input.data.questionType ?? "short_answer"),
-          mode: String(input.data.mode ?? "practice"),
+          mode,
+          modePolicy,
           material: context.material,
         },
       };
@@ -221,10 +246,21 @@ export function createStudyWalkingSkeletonGraphs(
     execute(instance, input, ctx) {
       const expectedDifficulty = String(input.data.difficulty);
       const expectedType = String(input.data.questionType);
+      const allowedKnowledgePointIds = Array.isArray(input.data.knowledgePointIds)
+        ? input.data.knowledgePointIds.filter((item): item is string => typeof item === "string")
+        : [];
+      const target = input.data.target as { kind?: unknown; id?: unknown } | undefined;
+      const exactKnowledgePointId = target?.kind === "card" && typeof target.id === "string" ? target.id : undefined;
       return createAgentExecute({
         outputSchema: questionOutputSchema,
-        validateCompletion: (result) => validateQuestionResultForRequest(result, expectedDifficulty, expectedType),
-        prompt: (nextInput) => `你是学习出题者。只依据下面资料生成一道题，不得引入资料外事实。\n\n要求：\n1. 难度为 ${String(nextInput.data.difficulty)}，题型为 ${String(nextInput.data.questionType)}，学习方式为 ${String(nextInput.data.mode)}。\n2. 题目必须有明确答案和简洁解析。\n3. source_basis 写实际使用的资料依据。\n4. 完成后调用 __graph_complete__，结果严格符合输出 schema。\n\n可用知识点：${JSON.stringify(nextInput.data.knowledgePointIds)}\n范围：${String(nextInput.data.scopeLabel)}\n\n资料：\n${String(nextInput.data.material)}`,
+        validateCompletion: (result) => validateQuestionResultForRequest(
+          result,
+          expectedDifficulty,
+          expectedType,
+          allowedKnowledgePointIds,
+          exactKnowledgePointId,
+        ),
+        prompt: (nextInput) => `你是学习出题者。只依据下面资料和固定策略生成一道题，不得引入资料外事实。\n\n固定难度策略：${JSON.stringify(nextInput.data.difficultyPolicy)}\n固定学习方式策略：${JSON.stringify(nextInput.data.modePolicy)}\n当前学习目标：${JSON.stringify(nextInput.data.target)}\n\n要求：\n1. 难度必须为 ${String(nextInput.data.difficulty)}，题型必须为 ${String(nextInput.data.questionType)}。\n2. 题目必须遵守上述策略，有明确答案和简洁解析。\n3. knowledge_points 只能使用当前目标允许的 ID；卡片练习只能使用当前卡片 ID。\n4. source_basis 写实际使用的资料依据。\n5. 不得逐字复用资料中的现成题目或答案。\n6. 完成后调用 __graph_complete__，结果严格符合输出 schema。\n\n可用知识点：${JSON.stringify(nextInput.data.knowledgePointIds)}\n范围：${String(nextInput.data.scopeLabel)}\n\n资料：\n${String(nextInput.data.material)}`,
       })(instance, input, ctx);
     },
   };
@@ -310,7 +346,7 @@ export function createStudyWalkingSkeletonGraphs(
     execute: createAgentExecute({
       outputSchema: summaryOutputSchema,
       validateCompletion: validateSummaryResult,
-      prompt: (input) => `根据本次会话与答题记录生成中文 Markdown 学习情况总结。必须包含：学习范围、作答表现、掌握证据、未获得掌握证据的内容、下一步建议。\n\n证据规则：\n1. attempt.outcome 是业务结果的唯一事实来源；只有 outcome=gave_up 才能写“用户主动放弃”。\n2. 普通错误答案、答非所问或“不知道”都不是放弃，不得改写为放弃。\n3. gave_up 只表示本次没有获得掌握证据，不能直接断言对应知识点薄弱。\n4. 不推断信心、焦虑、学习意愿、考试习惯、元认知能力或长期能力。\n5. 强项必须引用正确作答或讨论澄清证据；没有证据就明确写样本不足。\n6. 完成后调用 __graph_complete__。\n\n会话：${JSON.stringify(input.data.session)}\n答题记录：${JSON.stringify(input.data.attempts)}`,
+      prompt: (input) => `根据代码生成的 SessionEvidence 生成中文 Markdown 学习情况总结。必须包含：学习范围、可观察事实、掌握证据、未获得掌握证据的内容、下一步建议。\n\n证据规则：\n1. 只能使用 evidence 中的字段，不得补写原始答案、心理状态、习惯或长期能力。\n2. mastery_evidence 才能支持掌握结论；clarified_points 只表示讨论涉及的内容。\n3. unverified_topics 只表示没有获得掌握证据，不能改写为薄弱点或错误知识。\n4. 建议只能使用给定的有效难度目录，不得发明等级。\n5. 输出数组必须分别对应可观察事实、掌握证据、未验证主题和建议。\n6. 完成后调用 __graph_complete__。\n\n总结类型：${String(input.data.summaryKind ?? "final")}\n有效难度目录：${JSON.stringify(input.data.difficultyCatalog)}\nSessionEvidence：${JSON.stringify(input.data.evidence)}`,
     }),
   };
   const summarizeSession: Graph = {

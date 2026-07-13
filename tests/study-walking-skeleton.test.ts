@@ -59,6 +59,49 @@ describe("学习 walking skeleton 图", () => {
     expect(completion.result.material).toContain("主动回忆");
   });
 
+  it("代码节点按卡片或小节收窄 Agent 可见资料", async () => {
+    const graph = createStudyWalkingSkeletonGraphs(profiles).generateQuestion;
+    const node = graph.nodes.prepare_question_context;
+    if (!node || node.kind !== "code") throw new Error("prepare node missing");
+    const execute = (data: Record<string, unknown>) => node.execute(
+      { id: "test", globalGoal: "test", background: {}, frames: [], mechanisms: [], scratch: {} },
+      { data, source: { kind: "entry", entryId: "main" } },
+      {
+        signal: new AbortController().signal,
+        runAgent: async () => { throw new Error("not used"); },
+        callTool: async () => { throw new Error("callTool must not be used"); },
+      },
+    );
+
+    const card = await execute({
+      subjectId: "demo-review",
+      scopeId: "chapter:1",
+      targetKind: "card",
+      targetId: "active_recall",
+      difficulty: "S-U",
+      questionType: "short_answer",
+      mode: "card_practice",
+    });
+    expect(card.result.target).toMatchObject({ kind: "card", id: "active_recall" });
+    expect(card.result.knowledgePointIds).toEqual(["active_recall"]);
+    expect(card.result.material).toContain("# 主动回忆");
+    expect(card.result.material).not.toContain("# 学习方法 Demo");
+
+    const section = await execute({
+      subjectId: "demo-review",
+      scopeId: "chapter:1",
+      targetKind: "section",
+      targetId: "ch01-sec01",
+      difficulty: "M-U",
+      questionType: "short_answer",
+      mode: "chapter_study",
+    });
+    expect(section.result.target).toMatchObject({ kind: "section", id: "ch01-sec01" });
+    expect(section.result.knowledgePointIds).toEqual(["active_recall", "spaced_review", "interleaving"]);
+    expect(section.result.material).toContain("# 记忆与练习");
+    expect(section.result.material).not.toContain("# 学习方法 Demo");
+  });
+
   it("Agent 输出门禁拒绝缺字段并接受完整结果", () => {
     expect(validateQuestionResult({}).isValid).toBe(false);
     expect(validateQuestionResult({
@@ -86,9 +129,30 @@ describe("学习 walking skeleton 图", () => {
       isValid: false,
       reason: "difficulty 必须与用户选择一致：M-U",
     });
+    expect(validateQuestionResultForRequest({
+      question_id: "q1",
+      knowledge_points: ["spaced_review"],
+      difficulty: "S-U",
+      type: "short_answer",
+      question_text: "什么是主动回忆？",
+      correct_answer: "主动提取",
+      explanation_l1: "解释",
+      source_basis: "资料",
+      related_knowledge_chain: [],
+    }, "S-U", "short_answer", ["active_recall"], "active_recall")).toEqual({
+      isValid: false,
+      reason: "knowledge_points 超出当前学习目标",
+    });
     expect(validateGradeResult({}).isValid).toBe(false);
     expect(validateDiscussionResult({ reply: "解释", clarified_points: [], lingering_questions: [] }).isValid).toBe(true);
     expect(validateSummaryResult({ summary_markdown: "" }).isValid).toBe(false);
+    expect(validateSummaryResult({
+      summary_markdown: "# 总结",
+      observed_facts: [],
+      mastery_evidence: [],
+      unverified_topics: [],
+      recommendations: [],
+    }).isValid).toBe(true);
   });
 
   it("判题 Agent 被明确限制为只判 submitted_answer，不能改写成放弃", async () => {
@@ -114,14 +178,24 @@ describe("学习 walking skeleton 图", () => {
     expect(prompt).toContain("不能描述为“用户放弃”");
   });
 
-  it("总结 Agent 只把 outcome=gave_up 视为明确放弃", async () => {
+  it("总结 Agent 只消费受控 SessionEvidence", async () => {
     const node = createStudyWalkingSkeletonGraphs(profiles).summarizeSession.nodes.summarize_session;
     if (!node || node.kind !== "code") throw new Error("summary node missing");
     let prompt = "";
     await node.execute(
       { id: "test", globalGoal: "test", background: {}, frames: [], mechanisms: [], scratch: {} },
       {
-        data: { session: { totalQuestions: 1 }, attempts: [{ outcome: "correct" }] },
+        data: {
+          evidence: {
+            session: { total_questions: 1, correct: 0, gave_up: 1 },
+            observed_facts: ["完成 1 题"],
+            mastery_evidence: [],
+            unverified_topics: ["active_recall"],
+            recommendations: [],
+          },
+          difficultyCatalog: { "S-U": { label: "简单·理解" } },
+          summaryKind: "final",
+        },
         source: { kind: "entry", entryId: "main" },
       },
       {
@@ -133,7 +207,9 @@ describe("学习 walking skeleton 图", () => {
         callTool: async () => { throw new Error("not used"); },
       },
     );
-    expect(prompt).toContain("attempt.outcome 是业务结果的唯一事实来源");
-    expect(prompt).toContain("只有 outcome=gave_up 才能写“用户主动放弃”");
+    expect(prompt).toContain('\"unverified_topics\":[\"active_recall\"]');
+    expect(prompt).toContain("不能改写为薄弱点或错误知识");
+    expect(prompt).not.toContain("user_answer");
+    expect(prompt).not.toContain("correct_answer");
   });
 });
