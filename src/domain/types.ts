@@ -2,30 +2,47 @@
 //  Pi Study Helper — 核心领域类型
 // ============================================================
 //
-//  本文件定义稳定的业务类型，与 SDK Graph 类型和 pi 宿主类型正交。
-//  类型演进时优先添加新字段并标注 @since，不直接修改已发布字段语义。
+//  本文件是里程碑 1 walking skeleton 使用的领域类型草稿，与 SDK Graph
+//  类型和 pi 宿主类型正交。正式字段语义将在阶段 2 的 schema 设计中确定；
+//  在此之前不得把这些字段当作已发布兼容契约。
 // ============================================================
 
 // ── Profile（学习资料包）──
 
-/** 资料包状态 */
+/** 资料包状态（与所在 slot 必须一致） */
 export type ProfileStatus = "draft" | "active";
+
+/** 资料包位置 */
+export type ProfileSlot = ProfileStatus;
+
+/** canonical Profile 内部路径 */
+export interface ProfilePaths {
+  subject: string;
+  knowledgeIndex: string;
+  cards: string;
+  chapters: string;
+  examPoints: string;
+  sourceMap: string;
+  qualityReport: string;
+}
 
 /** 学习资料包 */
 export interface Profile {
   /** 科目标识（URL-safe） */
   subjectId: string;
-  /** 资料包版本 */
-  version: number;
+  /** 时间戳版本标识 */
+  version: string;
+  /** 单调递增修订号 */
+  revision: number;
   /** 资料包状态：draft 不可用于学习，active 可用 */
   status: ProfileStatus;
+  /** 所在 family slot */
+  slot: ProfileSlot;
   /** 科目名称（可读） */
   name: string;
-  /** 资料包根目录 */
-  root: string;
-  /** 源资料目录 */
-  sourceDir: string;
-  /** 修订来源（仅 revision draft 有值） */
+  /** canonical 内容路径 */
+  paths: ProfilePaths;
+  /** 修订来源版本（仅 revision draft 有值） */
   revisionOf?: string;
   /** 创建时间 ISO-8601 */
   createdAt: string;
@@ -102,6 +119,13 @@ export interface Attempt {
   question_text: string;
   options?: string[];
   user_answer: string;
+  /** 同一道题在完成前的全部提交，保留纠错过程 */
+  answer_history?: Array<{
+    answer: string;
+    is_correct: boolean;
+    grading: string;
+    timestamp: string;
+  }>;
   correct_answer: string;
   explanation_l1: string;
   source_basis: string;
@@ -161,6 +185,14 @@ export interface LearningProfile {
   weak_points: string[];
   strengths: string[];
   recent_sessions: string[];
+}
+
+/** 一次学习会话在私有学习记忆中的记录批次 */
+export interface LearningRecordBatch {
+  batchId: string;
+  subjectId: string;
+  sessionId: string;
+  directory: string;
 }
 
 // ── 代码侧业务能力接口 ──

@@ -4,6 +4,7 @@
 
 - [该项目主要目标](该项目主要目标.md)
 - [架构边界](架构边界.md)
+- [Profile 与私有学习记忆](Profile与私有学习记忆.md)
 - [ADR-0001：新主项目不承担旧项目兼容](../adr/0001-new-main-no-compatibility.md)
 
 实现进度不写在这里，见 [当前形态](../形态/README.md)。

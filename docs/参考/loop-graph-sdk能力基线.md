@@ -1,7 +1,7 @@
 # Loop Graph SDK 能力基线
 
 > 来源：`C:\Users\25173\Desktop\pi-loop-graph-extension`  
-> package：`pi-loop-graph-sdk@0.1.0`  
+> 原始 package：`pi-loop-graph-sdk@0.1.0`；本地包入口修复产物：`0.1.1`
 > 核对日期：2026-07-13
 
 ## 可用能力
@@ -25,11 +25,13 @@
 
 ## 接入注意
 
+- 早期基线 commit 的公共入口指向 TypeScript 源码，真实 pi/Jiti 加载会错误解析 `typebox/schema`；详见[SDK 包入口问题报告](../审查/2026-07-13-sdk-package-entry-jiti-resolution.md)。当前主项目固定使用包含编译后公共入口的 Git commit `0a80dd08f163df9ecc2089a3ab7d426b1bb883b3`。
 - `NodeContext.callTool()` 只有接口签名，当前 `PiNodeContext` 占位实现会直接抛错。
 - pi `ExtensionAPI` 没有 `invokeTool()`；`getAllTools()` 返回的 `ToolInfo` 也不包含 `execute`，所以 SDK 无法桥接执行已注册工具。
 - code node 应直接调用代码侧业务能力，而不是调用注册 tool；需要 Agent 使用时，再用薄 tool adapter 复用相同底层函数。
 - NodeContext 只有 `signal`、`runAgent` 和未实现的 `callTool`，没有业务命令的 ExtensionContext。
 - interactive TUI 应先验证自定义命令 + service gateway + 程序化执行图的宿主方式。
+- 带 `invocation` 的 Graph 由 SDK 命令入口按 `delegate` 隔离执行；未配置 `createDelegateHost` 会明确拒绝。产品 `/study` 需要持有同一个 TUI gateway，因此采用自定义 pi command + 程序化 `executeGraph()`，真实 probe 已证明该路径可用。
 - 一个 Node 只能声明一个 `skill`；需要验证全局与阶段规则的合成方式。
 - `createAgentExecute({ tools })` 中的 tools 已废弃且不生效；工具白名单声明在 Node 上。
 - Agent 只看显式 prompt、skill 和渲染后的 frame；`NodeInput.data` 不会自动进入 prompt。
@@ -46,7 +48,9 @@
 
 ## 测试基线
 
-核对日 `npm test` 通过 285/285，`npm run typecheck` 通过。该结果证明 SDK 自测健康，不替代真实 pi 学习场景的集成验证。
+原始基线 `npm test` 通过 285/285；加入包入口回归后通过 286/286，`npm run typecheck` 通过。该结果证明 SDK 自测健康，不替代真实 pi 学习场景的集成验证。
+
+2026-07-13 在固定 commit 上完成真实 pi Agent probe：`prepare_question_context → generate_question → grade_answer → summarize_session`，三张图均正常到达 `END`，并形成 completed 会话、1 题记录和非空总结。出题节点首次返回的字段类型不合格时，SDK 的 completion validator 成功驳回并让 Agent 订正后继续。详见[验证记录](../审查/2026-07-13-study-sdk-core-loop.md)。
 
 ## `callTool` 结论
 

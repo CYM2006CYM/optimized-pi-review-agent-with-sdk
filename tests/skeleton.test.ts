@@ -7,6 +7,7 @@
 // ============================================================
 
 import { describe, it, expect } from "vitest";
+import { readFile } from "node:fs/promises";
 
 // 验证核心类型可以导入（仅类型检查，不依赖运行时）
 describe("工程骨架", () => {
@@ -31,7 +32,28 @@ describe("工程骨架", () => {
 
   it("依赖声明了 pi-loop-graph-sdk", async () => {
     const pkg = await import("../package.json", { with: { type: "json" } });
-    expect(pkg.default.dependencies["pi-loop-graph-sdk"]).toBeDefined();
+    expect(pkg.default.dependencies["pi-loop-graph-sdk"]).toBe(
+      "git+https://github.com/0liveiraaa/pi-loop-graph-sdk.git#0a80dd08f163df9ecc2089a3ab7d426b1bb883b3",
+    );
+  });
+
+  it("开发宿主版本固定且提供真实 extension smoke", async () => {
+    const pkg = await import("../package.json", { with: { type: "json" } });
+    expect(pkg.default.devDependencies["@earendil-works/pi-coding-agent"]).toBe("0.80.3");
+    expect(pkg.default.devDependencies["@earendil-works/pi-tui"]).toBe("0.80.3");
+    expect(pkg.default.scripts["smoke:extension"]).toBe(
+      "node scripts/smoke-extension.mjs",
+    );
+  });
+
+  it("安装的 SDK 使用编译后公共入口", async () => {
+    const raw = await readFile(
+      new URL("../node_modules/pi-loop-graph-sdk/package.json", import.meta.url),
+      "utf8",
+    );
+    const sdkPackage = JSON.parse(raw);
+    expect(sdkPackage.main).toBe("./dist/index.js");
+    expect(sdkPackage.types).toBe("./dist/index.d.ts");
   });
 });
 
