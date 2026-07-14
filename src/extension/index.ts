@@ -5,7 +5,10 @@ import { createJsonlTraceSink } from "pi-loop-graph-sdk";
 import { LearningProfileController } from "../application/learning-profile-controller.js";
 import { ProfileBuildController } from "../application/profile-build-controller.js";
 import { ProfileRevisionController } from "../application/profile-revision-controller.js";
-import { StudySessionController } from "../application/study-session-controller.js";
+import {
+  isRecoverableStudyBatch,
+  StudySessionController,
+} from "../application/study-session-controller.js";
 import { resolveStudyDataRoot } from "../config/data-paths.js";
 import { createIsolatedGraphExecutor } from "../graphs/isolated-graph-executor.js";
 import { createStudyWalkingSkeletonGraphs } from "../graphs/study-walking-skeleton.js";
@@ -134,13 +137,13 @@ export default async function studyHelperExtension(pi: ExtensionAPI): Promise<vo
     try {
       await profiles.seedDemoProfile();
       const activeProfiles = await profiles.listActiveProfiles();
-      let runningCount = 0;
+      let recoveryCount = 0;
       for (const profile of activeProfiles) {
         const batches = await memory.listPendingBatches(profile.subjectId);
-        runningCount += batches.filter((batch) => batch.session.status === "running").length;
+        recoveryCount += batches.filter(isRecoverableStudyBatch).length;
       }
-      const recoveryNotice = runningCount > 0
-        ? `；发现 ${runningCount} 个未完成会话，可使用 /study-recover 处理`
+      const recoveryNotice = recoveryCount > 0
+        ? `；发现 ${recoveryCount} 个待处理会话，可使用 /study-recover 处理`
         : "";
       ctx.ui.notify(`Pi Study Helper 已加载；使用 /study 开始学习${recoveryNotice}。`, "info");
     } catch (error) {

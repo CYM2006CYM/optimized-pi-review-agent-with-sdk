@@ -2,3 +2,23 @@ node_modules/
 dist/
 log/
 *.log
+
+# Local runtime data and manual evidence may contain private learning records.
+.manual-test/
+study-helper-data/
+profile_build_jobs/
+traces/
+*.jsonl
+
+# Local credentials and machine-specific configuration.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+
+# Raw interaction transcripts stay local; review documents contain summaries only.
+docs/审查/聊天记录.md
+docs/审查/聊天记录.txt

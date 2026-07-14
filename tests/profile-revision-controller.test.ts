@@ -40,7 +40,7 @@ describe("ProfileRevisionController", () => {
     await rm(dataRoot, { recursive: true, force: true });
   });
 
-  function controller(ui: RevisionUi, options: { blocking?: boolean; failAt?: string; clarifyOnce?: boolean } = {}) {
+  function controller(ui: RevisionUi, options: { blocking?: boolean; failAt?: string; clarifyOnce?: boolean; patchContent?: string } = {}) {
     const graphs = createStudyWalkingSkeletonGraphs(profiles);
     let planCalls = 0;
     const executeGraph: IsolatedGraphExecutor = async (graph): Promise<GraphRunResult> => {
@@ -83,7 +83,7 @@ describe("ProfileRevisionController", () => {
           steps: 1,
           result: {
             summary: "科目说明已更新",
-            changes: [{ path: "subject.md", operation: "update", reason: "按用户反馈补充", content: "# 已修订的学习方法\n" }],
+            changes: [{ path: "subject.md", operation: "update", reason: "按用户反馈补充", content: options.patchContent ?? "# 已修订的学习方法\n" }],
             unresolved: [],
           },
         };
@@ -105,7 +105,7 @@ describe("ProfileRevisionController", () => {
 
   it("从 active 创建 draft、修订并确认启用归档旧版本", async () => {
     const oldVersion = (await profiles.loadActiveProfile("demo-review")).version;
-    const ui = new RevisionUi(["应用这份修订计划", "确认启用为 active"], ["修订科目说明"]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "确认启用为 active"], ["修订科目说明"]);
 
     await expect(controller(ui).run("demo-review")).resolves.toEqual({ status: "enabled", subjectId: "demo-review" });
     expect(await profiles.readActiveFile("demo-review", "subject.md")).toBe("# 已修订的学习方法\n");
@@ -117,7 +117,7 @@ describe("ProfileRevisionController", () => {
 
   it("质量阻塞时不提供启用并保留合法 draft", async () => {
     const oldVersion = (await profiles.loadActiveProfile("demo-review")).version;
-    const ui = new RevisionUi(["应用这份修订计划", "保留 draft，稍后继续"], ["修订科目说明"]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "保留 draft，稍后继续"], ["修订科目说明"]);
 
     await expect(controller(ui, { blocking: true }).run("demo-review")).resolves.toEqual({ status: "kept_draft", subjectId: "demo-review" });
     expect((await profiles.loadActiveProfile("demo-review")).version).toBe(oldVersion);
@@ -126,7 +126,7 @@ describe("ProfileRevisionController", () => {
 
   it("用户放弃修订只删除 draft，active 保持不变", async () => {
     const oldVersion = (await profiles.loadActiveProfile("demo-review")).version;
-    const ui = new RevisionUi(["应用这份修订计划", "放弃并删除 draft"], ["修订科目说明"]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "放弃并删除 draft"], ["修订科目说明"]);
 
     await expect(controller(ui).run("demo-review")).resolves.toEqual({ status: "discarded", subjectId: "demo-review" });
     expect((await profiles.loadActiveProfile("demo-review")).version).toBe(oldVersion);
@@ -144,7 +144,7 @@ describe("ProfileRevisionController", () => {
   });
 
   it("含糊反馈先澄清，不在首个计划中写入文件", async () => {
-    const ui = new RevisionUi(["应用这份修订计划", "保留 draft，稍后继续"], ["这里改一下", "修改科目说明"]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "保留 draft，稍后继续"], ["这里改一下", "修改科目说明"]);
 
     await expect(controller(ui, { clarifyOnce: true }).run("demo-review"))
       .resolves.toEqual({ status: "kept_draft", subjectId: "demo-review" });
@@ -153,11 +153,28 @@ describe("ProfileRevisionController", () => {
 
   it("已有 draft 继续修订，不重复复制或增加 revision", async () => {
     const existing = await profiles.createRevisionDraft("demo-review");
-    const ui = new RevisionUi(["应用这份修订计划", "保留 draft，稍后继续"], ["修订科目说明"]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "保留 draft，稍后继续"], ["修订科目说明"]);
 
     await expect(controller(ui).run("demo-review")).resolves.toEqual({ status: "kept_draft", subjectId: "demo-review" });
     const revised = await profiles.loadDraftProfile("demo-review");
     expect(revised.revision).toBe(existing.revision);
     expect(revised.version).toBe(existing.version);
+  });
+
+  it("连续修订最终抵消 active 差异时禁止启用", async () => {
+    const activeSubject = await profiles.readActiveFile("demo-review", "subject.md");
+    await profiles.createRevisionDraft("demo-review");
+    await profiles.applyDraftChanges("demo-review", [{
+      path: "subject.md",
+      operation: "update",
+      reason: "上一轮修改",
+      content: "# 临时修改\n",
+    }]);
+    const ui = new RevisionUi(["应用这份修订计划", "确认写入这些实际变更", "保留 draft，稍后继续"], ["恢复原说明"]);
+
+    await expect(controller(ui, { patchContent: activeSubject }).run("demo-review"))
+      .resolves.toEqual({ status: "kept_draft", subjectId: "demo-review" });
+    expect(await profiles.readDraftFile("demo-review", "quality_report.md")).toContain("没有实际内容差异");
+    expect((await profiles.loadActiveProfile("demo-review")).revision).toBe(1);
   });
 });

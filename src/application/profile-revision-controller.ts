@@ -2,6 +2,8 @@ import type { GraphRunResult } from "pi-loop-graph-sdk";
 import type { StudyControllerUi } from "./study-session-controller.js";
 import {
   inspectProfileStructure,
+  plannedContentDifferences,
+  profileContentDifferences,
   type ProfileFileSnapshot,
   type ProfileRevisionPlan,
   type ProfileRevisionQualityReview,
@@ -19,6 +21,7 @@ import type {
 } from "../repositories/profile-family-repository.js";
 
 const APPLY_PLAN = "应用这份修订计划";
+const APPLY_PATCH = "确认写入这些实际变更";
 const REENTER_FEEDBACK = "重新输入修订意见";
 const ENABLE_DRAFT = "确认启用为 active";
 const CONTINUE_REVISION = "继续修改";
@@ -104,6 +107,17 @@ function qualityReport(
     lines.push("", ...structureWarnings.map((item) => `- [警告] ${item}`));
   }
   return `${lines.join("\n")}\n`;
+}
+
+function contentExcerpt(content: string | null): string {
+  if (content === null) return "[文件不存在]";
+  const lines = content.split(/\r?\n/u);
+  const excerpt = lines.slice(0, 8).join("\n");
+  return lines.length > 8 ? `${excerpt}\n[其余内容省略]` : excerpt;
+}
+
+function renderActualDifferences(differences: ReturnType<typeof plannedContentDifferences>): string {
+  return differences.map((difference) => `## ${difference.path}\n\n修改前：\n\n\`\`\`text\n${contentExcerpt(difference.before)}\n\`\`\`\n\n修改后：\n\n\`\`\`text\n${contentExcerpt(difference.after)}\n\`\`\``).join("\n\n");
 }
 
 function parseArgs(args: string): { requestedSubjectId?: string; initialFeedback?: string } {
@@ -222,12 +236,43 @@ export class ProfileRevisionController {
             currentFiles: filesForPlan(beforeFiles, plan),
           },
         )), plan);
+        const actualDifferences = plannedContentDifferences(beforeFiles, patch.changes);
+        const noOpPaths = patch.changes
+          .map((change) => change.path)
+          .filter((path) => !actualDifferences.some((difference) => difference.path === path));
+        if (noOpPaths.length > 0) {
+          throw new Error(`Agent 声称修改但文件内容没有变化：${noOpPaths.join("、")}`);
+        }
+        this.ui.notify(`# 实际文件变更预览\n\n${renderActualDifferences(actualDifferences)}`, "info");
+        const patchAction = await this.ui.select("确认实际文件变更", [APPLY_PATCH, REENTER_FEEDBACK, KEEP_DRAFT]);
+        if (patchAction !== APPLY_PATCH) {
+          if (patchAction === REENTER_FEEDBACK) {
+            const nextFeedback = await this.ui.input("重新输入修订意见", "说明哪里需要修改以及期望结果");
+            if (nextFeedback?.trim()) {
+              feedback = nextFeedback;
+              continue;
+            }
+          }
+          this.ui.notify(`修订补丁尚未写入，draft ${subjectId} 已保留。`, "info");
+          return { status: "kept_draft", subjectId };
+        }
         await this.profiles.applyDraftChanges(subjectId, patch.changes);
 
         const revisedFiles = await this.profiles.listDraftFiles(subjectId);
         const inspection = inspectProfileStructure(revisedFiles);
         const unresolved = unique(patch.unresolved);
-        const structureBlocking = unique([...inspection.blockingIssues, ...unresolved.map((item) => `未解决：${item}`)]);
+        let noNetChangeBlocking: string[] = [];
+        if (candidate.hasActive) {
+          const activeFiles = await this.profiles.listActiveFiles(subjectId);
+          if (profileContentDifferences(activeFiles, revisedFiles).length === 0) {
+            noNetChangeBlocking = ["修订 draft 与当前 active 没有实际内容差异"];
+          }
+        }
+        const structureBlocking = unique([
+          ...inspection.blockingIssues,
+          ...unresolved.map((item) => `未解决：${item}`),
+          ...noNetChangeBlocking,
+        ]);
         const changedPaths = new Set(plan.operations.map((item) => item.path));
         this.ui.setStatus("pi-study-helper", "正在独立审查修订质量…");
         const quality = asProfileRevisionQuality(requireSuccessfulGraph(await this.executeGraph(

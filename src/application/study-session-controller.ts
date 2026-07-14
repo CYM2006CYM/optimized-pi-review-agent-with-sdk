@@ -1,4 +1,4 @@
-import type { GraphRunResult } from "pi-loop-graph-sdk";
+import type { Graph, GraphRunResult } from "pi-loop-graph-sdk";
 import { buildDiscussionAgentInput } from "./study-discussion.js";
 import { executeOptionalDiscussion } from "./optional-discussion.js";
 import { prepareMaterialForDisplay } from "../domain/material-display.js";
@@ -89,12 +89,23 @@ interface SelectedStudyTarget extends MaterialTargetMetadata {
   kind: StudyTargetKind;
 }
 
-interface RunningCandidate {
+interface RecoveryCandidate {
   subjectId: string;
   subjectName: string;
   batchId: string;
   session: StudySession;
   attempts: Attempt[];
+}
+
+export function isRecoverableStudyBatch(batch: {
+  session: Pick<StudySession, "status">;
+  attempts: readonly Attempt[];
+  summaryMarkdown?: string;
+}): boolean {
+  return batch.session.status === "running"
+    || (batch.session.status === "interrupted"
+      && batch.attempts.length > 0
+      && !batch.summaryMarkdown?.trim());
 }
 
 function selectedValue<T>(label: string | undefined, options: Array<{ label: string; value: T }>): T | undefined {
@@ -107,6 +118,21 @@ function requireSuccessfulGraph(result: GraphRunResult): Record<string, unknown>
     throw new Error(`图 ${result.graphId} 未正常完成（${result.status}）${reason}`);
   }
   return result.result;
+}
+
+async function executeSummaryWithRetry(
+  executeGraph: IsolatedGraphExecutor,
+  graph: Graph,
+  params: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  let lastResult: GraphRunResult | undefined;
+  for (let completionAttempt = 1; completionAttempt <= 2; completionAttempt += 1) {
+    lastResult = await executeGraph(graph, { ...params, completionAttempt });
+    if (lastResult.status === "ok") return lastResult.result;
+    if (lastResult.status !== "failed") break;
+  }
+  if (!lastResult) throw new Error("总结图没有启动");
+  return requireSuccessfulGraph(lastResult);
 }
 
 function harderDifficulty(current: DifficultyLevel): DifficultyLevel {
@@ -158,8 +184,9 @@ function changeTargetLabel(mode: ReviewMode): string {
   return "更换章节/知识点";
 }
 
-function recoveryLabel(candidate: RunningCandidate): string {
-  return `${candidate.subjectName} · ${candidate.session.mode} · ${candidate.session.totalQuestions} 题 · ${candidate.batchId}`;
+function recoveryLabel(candidate: RecoveryCandidate): string {
+  const state = candidate.session.status === "interrupted" ? "待补总结" : "进行中";
+  return `${candidate.subjectName} · ${state} · ${candidate.session.mode} · ${candidate.session.totalQuestions} 题 · ${candidate.batchId}`;
 }
 
 export class StudySessionController {
@@ -185,14 +212,14 @@ export class StudySessionController {
     return this.now().toISOString();
   }
 
-  private async runningCandidates(): Promise<RunningCandidate[]> {
+  private async recoveryCandidates(): Promise<RecoveryCandidate[]> {
     await this.profiles.seedDemoProfile();
     const activeProfiles = await this.profiles.listActiveProfiles();
-    const candidates: RunningCandidate[] = [];
+    const candidates: RecoveryCandidate[] = [];
     for (const profile of activeProfiles) {
       const batches = await this.memory.listPendingBatches(profile.subjectId);
       for (const batch of batches) {
-        if (batch.session.status !== "running") continue;
+        if (!isRecoverableStudyBatch(batch)) continue;
         candidates.push({
           subjectId: profile.subjectId,
           subjectName: profile.name,
@@ -206,14 +233,18 @@ export class StudySessionController {
   }
 
   async countRunningSessions(): Promise<number> {
-    return (await this.runningCandidates()).length;
+    return (await this.recoveryCandidates()).filter((candidate) => candidate.session.status === "running").length;
+  }
+
+  async countRecoverableSessions(): Promise<number> {
+    return (await this.recoveryCandidates()).length;
   }
 
   async recoverRunningSession(): Promise<StudyRecoveryResult> {
     this.ui.setStatus("pi-study-helper", "正在检查未完成学习会话…");
-    let selectedCandidate: RunningCandidate | undefined;
+    let selectedCandidate: RecoveryCandidate | undefined;
     try {
-      const candidates = await this.runningCandidates();
+      const candidates = await this.recoveryCandidates();
       if (candidates.length === 0) {
         this.ui.notify("没有需要处理的未完成学习会话。", "info");
         return { status: "none" };
@@ -223,7 +254,9 @@ export class StudySessionController {
       selectedCandidate = candidates[labels.indexOf(selected ?? "")];
       if (!selectedCandidate) return { status: "cancelled" };
 
-      const actions = selectedCandidate.attempts.length > 0
+      const actions = selectedCandidate.session.status === "interrupted"
+        ? [RECOVER_SUMMARY, RECOVER_CANCEL]
+        : selectedCandidate.attempts.length > 0
         ? [RECOVER_SUMMARY, RECOVER_INTERRUPT, RECOVER_CANCEL]
         : [RECOVER_INTERRUPT, RECOVER_CANCEL];
       const action = await this.ui.select("如何处理该会话？", actions);
@@ -245,14 +278,15 @@ export class StudySessionController {
       }
 
       this.ui.setStatus("pi-study-helper", "正在为未完成会话补生成总结…");
-      const summaryResult = requireSuccessfulGraph(await this.executeGraph(
+      const summaryResult = await executeSummaryWithRetry(
+        this.executeGraph,
         this.graphs.summarizeSession,
         {
           evidence: buildSessionEvidence(selectedCandidate.session, selectedCandidate.attempts),
           difficultyCatalog: DIFFICULTY_POLICIES,
           summaryKind: "recovery",
         },
-      ));
+      );
       const summaryMarkdown = String(summaryResult.summary_markdown ?? "").trim();
       if (!summaryMarkdown) throw new Error("总结节点没有生成可保存的学习情况总结");
       const endedAt = this.nowIso();
@@ -270,7 +304,8 @@ export class StudySessionController {
       };
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      this.ui.notify(`未完成会话处理失败：${message}。原记录保持 running，可稍后重试。`, "error");
+      const preservedStatus = selectedCandidate?.session.status ?? "原有";
+      this.ui.notify(`未完成会话处理失败：${message}。原记录保持 ${preservedStatus}，可稍后重试。`, "error");
       return {
         status: "failed",
         subjectId: selectedCandidate?.subjectId,
@@ -614,14 +649,15 @@ export class StudySessionController {
           }
           if (action === "查看当前学习总结") {
             this.ui.setStatus("pi-study-helper", "正在生成当前学习总结…");
-            const interim = requireSuccessfulGraph(await this.executeGraph(
+            const interim = await executeSummaryWithRetry(
+              this.executeGraph,
               this.graphs.summarizeSession,
               {
                 evidence: buildSessionEvidence(session, attempts),
                 difficultyCatalog: DIFFICULTY_POLICIES,
                 summaryKind: "interim",
               },
-            ));
+            );
             this.ui.notify(String(interim.summary_markdown ?? "暂无总结"), "info");
           }
           if (action === "结束并保存总结") shouldEnd = true;
@@ -629,14 +665,15 @@ export class StudySessionController {
       }
 
       this.ui.setStatus("pi-study-helper", "正在生成本次学习情况总结…");
-      const summaryResult = requireSuccessfulGraph(await this.executeGraph(
+      const summaryResult = await executeSummaryWithRetry(
+        this.executeGraph,
         this.graphs.summarizeSession,
         {
           evidence: buildSessionEvidence(session, attempts),
           difficultyCatalog: DIFFICULTY_POLICIES,
           summaryKind: "final",
         },
-      ));
+      );
       const summaryMarkdown = String(summaryResult.summary_markdown ?? "").trim();
       if (!summaryMarkdown) throw new Error("总结节点没有生成可保存的学习情况总结");
 

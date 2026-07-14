@@ -89,6 +89,7 @@ interface HarnessOptions {
   inputs?: Array<string | undefined>;
   grades?: GradeResult[];
   summaryFailure?: boolean;
+  summaryFailures?: number;
   memory?: PrivateMemoryRepository;
 }
 
@@ -121,6 +122,7 @@ describe("StudySessionController", () => {
     const graphs = createStudyWalkingSkeletonGraphs(profiles);
     const calls: string[] = [];
     const grades = [...(options.grades ?? [grade(true)])];
+    let summaryFailures = options.summaryFailures ?? 0;
     const executeGraph: IsolatedGraphExecutor = async (graph) => {
       calls.push(graph.id);
       if (graph.id === graphs.generateQuestion.id) return graphResult(graph, questionResult());
@@ -128,7 +130,10 @@ describe("StudySessionController", () => {
       if (graph.id === graphs.discussQuestion.id) {
         return graphResult(graph, { reply: "提示", clarified_points: [], lingering_questions: [] });
       }
-      if (options.summaryFailure) return graphResult(graph, { reason: "summary failed" }, "failed");
+      if (options.summaryFailure || summaryFailures > 0) {
+        summaryFailures = Math.max(0, summaryFailures - 1);
+        return graphResult(graph, { reason: "summary failed" }, "failed");
+      }
       return graphResult(graph, {
         summary_markdown: "# 学习总结\n\n完成本次学习。",
         observed_facts: [],
@@ -148,6 +153,59 @@ describe("StudySessionController", () => {
       createId: () => ids.shift() ?? "fallback-id",
     });
     return { controller, ui, calls, executeGraph, graphs };
+  }
+
+  async function createInterruptedBatchWithAttempt(sessionId = "interrupted-session") {
+    const running: StudySession = {
+      sessionId,
+      subjectId: "demo-review",
+      status: "running",
+      mode: "practice",
+      scope: SCOPE,
+      scopeHistory: [{ scopeId: "chapter:1", scopeLabel: SCOPE, enteredAt: "2026-07-13T15:00:00.000Z" }],
+      totalQuestions: 1,
+      correct: 1,
+      incorrect: 0,
+      createdAt: "2026-07-13T15:00:00.000Z",
+      updatedAt: "2026-07-13T15:05:00.000Z",
+    };
+    const batch = await memory.createPendingBatch(running);
+    await memory.saveAttempt("demo-review", batch.batchId, {
+      question_id: `${sessionId}-question`,
+      session_id: running.sessionId,
+      scope_id: "chapter:1",
+      scope_label: SCOPE,
+      target_kind: "scope",
+      target_id: "chapter:1",
+      target_label: SCOPE,
+      knowledge_points: ["active_recall"],
+      difficulty: "S-U",
+      type: "short_answer",
+      timestamp: "2026-07-13T15:04:00.000Z",
+      question_text: "什么是主动回忆？",
+      user_answer: "主动提取",
+      answer_history: [{
+        answer: "主动提取",
+        is_correct: true,
+        grading: "正确",
+        timestamp: "2026-07-13T15:04:00.000Z",
+      }],
+      correct_answer: "主动提取",
+      explanation_l1: "解释",
+      source_basis: "active Profile",
+      outcome: "correct",
+      is_correct: true,
+      knowledge_chain_l3: [],
+      suggestion_next: "继续",
+    });
+    const endedAt = "2026-07-13T15:05:30.000Z";
+    await memory.interruptSession("demo-review", batch.batchId, {
+      ...running,
+      status: "interrupted",
+      updatedAt: endedAt,
+      endedAt,
+    });
+    return batch;
   }
 
   it("首次答对后保存 attempt、总结并完成会话", async () => {
@@ -210,6 +268,16 @@ describe("StudySessionController", () => {
     expect(batch?.session.status).toBe("interrupted");
     expect(batch?.attempts).toHaveLength(1);
     expect(batch?.summaryMarkdown).toBeUndefined();
+  });
+
+  it("最终总结首次未完成时在新隔离会话重试并正常保存", async () => {
+    const { controller, calls } = harness({ summaryFailures: 1 });
+
+    await expect(controller.run("demo-review")).resolves.toMatchObject({ status: "completed" });
+    expect(calls.filter((id) => id === "study_summarize_session")).toHaveLength(2);
+    const [batch] = await memory.listPendingBatches("demo-review");
+    expect(batch?.session.status).toBe("completed");
+    expect(batch?.summaryMarkdown).toContain("学习总结");
   });
 
   it("attempt 持久化失败时不进入题后菜单并标记 interrupted", async () => {
@@ -316,6 +384,67 @@ describe("StudySessionController", () => {
     await expect(controller.recoverRunningSession()).resolves.toMatchObject({ status: "interrupted" });
     expect(executeGraph).not.toHaveBeenCalled();
     expect((await memory.loadPendingBatch("demo-review", batch.batchId)).session.status).toBe("interrupted");
+  });
+
+  it("可以为有 attempt 且无 summary 的 interrupted 会话补总结", async () => {
+    const batch = await createInterruptedBatchWithAttempt();
+    const { controller, ui, calls } = harness({
+      selections: ["__FIRST__", "生成总结并结束"],
+      inputs: [],
+    });
+
+    await expect(controller.countRunningSessions()).resolves.toBe(0);
+    await expect(controller.countRecoverableSessions()).resolves.toBe(1);
+    await expect(controller.recoverRunningSession()).resolves.toMatchObject({
+      status: "completed",
+      batchId: batch.batchId,
+    });
+
+    expect(calls).toEqual(["study_summarize_session"]);
+    expect(ui.selectTitles).toContain("如何处理该会话？");
+    const loaded = await memory.loadPendingBatch("demo-review", batch.batchId);
+    expect(loaded.session.status).toBe("completed");
+    expect(loaded.summaryMarkdown).toContain("学习总结");
+  });
+
+  it("零题 interrupted 会话不进入补总结候选", async () => {
+    const running: StudySession = {
+      sessionId: "empty-interrupted-session",
+      subjectId: "demo-review",
+      status: "running",
+      mode: "practice",
+      scope: SCOPE,
+      scopeHistory: [{ scopeId: "chapter:1", scopeLabel: SCOPE, enteredAt: "2026-07-13T15:00:00.000Z" }],
+      totalQuestions: 0,
+      correct: 0,
+      incorrect: 0,
+      createdAt: "2026-07-13T15:00:00.000Z",
+      updatedAt: "2026-07-13T15:00:00.000Z",
+    };
+    const batch = await memory.createPendingBatch(running);
+    await memory.interruptSession("demo-review", batch.batchId, { ...running, status: "interrupted" });
+    const { controller, calls, ui } = harness({ selections: [], inputs: [] });
+
+    await expect(controller.countRecoverableSessions()).resolves.toBe(0);
+    await expect(controller.recoverRunningSession()).resolves.toEqual({ status: "none" });
+    expect(calls).toEqual([]);
+    expect(ui.notifications.at(-1)?.message).toContain("没有需要处理");
+  });
+
+  it("interrupted 会话补总结失败时保持 interrupted 供下次重试", async () => {
+    const batch = await createInterruptedBatchWithAttempt("retry-interrupted-session");
+    const { controller, ui } = harness({
+      selections: ["__FIRST__", "生成总结并结束"],
+      inputs: [],
+      summaryFailure: true,
+    });
+
+    await expect(controller.recoverRunningSession()).resolves.toMatchObject({
+      status: "failed",
+      batchId: batch.batchId,
+    });
+    expect((await memory.loadPendingBatch("demo-review", batch.batchId)).session.status).toBe("interrupted");
+    expect(ui.notifications.at(-1)?.message).toContain("保持 interrupted");
   });
 
   it("遗留会话补总结失败时保持 running 供下次重试", async () => {

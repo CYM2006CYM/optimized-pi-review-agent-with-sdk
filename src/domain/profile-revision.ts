@@ -51,6 +51,12 @@ export interface ProfileStructureInspection {
   };
 }
 
+export interface ProfileContentDifference {
+  path: string;
+  before: string | null;
+  after: string | null;
+}
+
 const REQUIRED_FILES = new Set(["subject.md", "knowledge_index.json", "source_map.json", "quality_report.md"]);
 const MUTABLE_ROOT_FILES = new Set(["subject.md", "knowledge_index.json", "source_map.json"]);
 const MUTABLE_PREFIXES = ["cards/", "chapters/", "exam_points/"];
@@ -273,4 +279,30 @@ export function inspectProfileStructure(files: readonly ProfileFileSnapshot[]): 
       examPoints: examPointCount,
     },
   };
+}
+
+export function profileContentDifferences(
+  beforeFiles: readonly ProfileFileSnapshot[],
+  afterFiles: readonly ProfileFileSnapshot[],
+  ignoredPaths: readonly string[] = ["profile.json", "quality_report.md"],
+): ProfileContentDifference[] {
+  const ignored = new Set(ignoredPaths);
+  const before = new Map(beforeFiles.filter((file) => !ignored.has(file.path)).map((file) => [file.path, file.content]));
+  const after = new Map(afterFiles.filter((file) => !ignored.has(file.path)).map((file) => [file.path, file.content]));
+  const paths = [...new Set([...before.keys(), ...after.keys()])].sort((a, b) => a.localeCompare(b, "zh-CN"));
+  return paths
+    .filter((path) => before.get(path) !== after.get(path))
+    .map((path) => ({ path, before: before.get(path) ?? null, after: after.get(path) ?? null }));
+}
+
+export function plannedContentDifferences(
+  beforeFiles: readonly ProfileFileSnapshot[],
+  changes: readonly ProfileRevisionChange[],
+): ProfileContentDifference[] {
+  const before = new Map(beforeFiles.map((file) => [file.path, file.content]));
+  return changes.map((change) => {
+    const previous = before.get(change.path) ?? null;
+    const after = change.operation === "delete" ? null : change.content ?? null;
+    return { path: change.path, before: previous, after };
+  }).filter((difference) => difference.before !== difference.after);
 }

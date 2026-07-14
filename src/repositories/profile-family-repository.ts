@@ -287,6 +287,27 @@ export class ProfileFamilyRepository {
     return files;
   }
 
+  async listActiveFiles(subjectId: string): Promise<ProfileFileSnapshot[]> {
+    const active = this.slotDirectory(subjectId, "active");
+    await this.loadActiveProfile(subjectId);
+    const files: ProfileFileSnapshot[] = [];
+    const visit = async (directory: string): Promise<void> => {
+      const entries = await readdir(directory, { withFileTypes: true });
+      for (const entry of entries.sort((a, b) => a.name.localeCompare(b.name, "zh-CN"))) {
+        if (entry.isSymbolicLink()) throw new Error(`Symbolic links are not allowed in active Profile: ${entry.name}`);
+        const absolute = resolveInside(directory, entry.name);
+        if (entry.isDirectory()) await visit(absolute);
+        else if (entry.isFile() && /\.(md|json)$/iu.test(entry.name)) {
+          const relativePath = relative(active, absolute).replaceAll("\\", "/");
+          assertSafeRelativePath(relativePath);
+          files.push({ path: relativePath, content: await readFile(absolute, "utf8") });
+        }
+      }
+    };
+    await visit(active);
+    return files;
+  }
+
   async applyDraftChanges(subjectId: string, changes: readonly ProfileRevisionChange[]): Promise<Profile> {
     if (changes.length === 0) throw new Error("Profile revision requires at least one change");
     const draft = this.slotDirectory(subjectId, "draft");

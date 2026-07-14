@@ -594,7 +594,12 @@ export function createStudyWalkingSkeletonGraphs(
     execute: createAgentExecute({
       outputSchema: summaryOutputSchema,
       validateCompletion: validateSummaryResult,
-      prompt: (input) => `根据代码生成的 SessionEvidence 生成中文 Markdown 学习情况总结。必须包含：学习范围、可观察事实、掌握证据、未获得掌握证据的内容、下一步建议。\n\n证据规则：\n1. 只能使用 evidence 中的字段，不得补写原始答案、心理状态、习惯或长期能力。\n2. mastery_evidence 才能支持掌握结论；clarified_points 只表示讨论涉及的内容。\n3. unverified_topics 只表示没有获得掌握证据，不能改写为薄弱点或错误知识。\n4. 建议只能使用给定的有效难度目录，不得发明等级。\n5. 输出数组必须分别对应可观察事实、掌握证据、未验证主题和建议。\n6. 完成后调用 __graph_complete__。\n\n总结类型：${String(input.data.summaryKind ?? "final")}\n有效难度目录：${JSON.stringify(input.data.difficultyCatalog)}\nSessionEvidence：${JSON.stringify(input.data.evidence)}`,
+      prompt: (input) => {
+        const retryReminder = Number(input.data.completionAttempt ?? 1) > 1
+          ? "这是一次全新隔离会话中的总结重试。上一次没有形成节点结果，本次必须调用 __graph_complete__ 提交结构化总结。\n\n"
+          : "";
+        return `${retryReminder}根据代码生成的 SessionEvidence 生成中文 Markdown 学习情况总结。必须包含：学习范围、可观察事实、掌握证据、未获得掌握证据的内容、下一步建议。\n\n证据规则：\n1. 只能使用 evidence 中的字段，不得补写原始答案、心理状态、习惯或长期能力。\n2. mastery_evidence 才能支持掌握结论；clarified_points 只表示讨论涉及的内容。\n3. unverified_topics 只表示没有获得掌握证据，不能改写为薄弱点或错误知识。\n4. 建议只能使用给定的有效难度目录，不得发明等级。\n5. 输出数组必须分别对应可观察事实、掌握证据、未验证主题和建议。\n6. 完成后调用 __graph_complete__。\n\n总结类型：${String(input.data.summaryKind ?? "final")}\n有效难度目录：${JSON.stringify(input.data.difficultyCatalog)}\nSessionEvidence：${JSON.stringify(input.data.evidence)}`;
+      },
     }),
   };
   const summarizeSession: Graph = {
