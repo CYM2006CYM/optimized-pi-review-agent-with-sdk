@@ -15,8 +15,8 @@ const commits = execFileSync(
 ).split(/\r?\n/u).filter(Boolean);
 
 if (commits.length > 0) {
-  console.error(`Git 历史仍包含本地学习数据或原始交互记录，开源前必须重写历史或建立干净公开仓库。涉及提交数：${new Set(commits).size}`);
+  console.error(`Git history still contains private learning data or raw interaction transcripts. Commits affected: ${new Set(commits).size}`);
   process.exitCode = 1;
 } else {
-  console.log("Git 历史检查通过：未发现本地学习数据或原始交互记录路径。");
+  console.log("Git history check passed: no private learning data or raw interaction transcripts found.");
 }

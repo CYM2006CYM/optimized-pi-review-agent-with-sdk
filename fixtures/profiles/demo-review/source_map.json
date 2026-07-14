@@ -1,24 +1,6 @@
 {
-  "sources": [
-    {
-      "id": "src-demo-memory",
-      "path": "docs/参考/demo-review/chapters/1.1-memory-practice.md",
-      "type": "markdown",
-      "status": "available"
-    },
-    {
-      "id": "src-demo-feedback",
-      "path": "docs/参考/demo-review/chapters/2.1-feedback-review.md",
-      "type": "markdown",
-      "status": "available"
-    }
-  ],
-  "mappings": {
-    "chapters/01/01.01.md": ["src-demo-memory"],
-    "chapters/02/02.01.md": ["src-demo-feedback"],
-    "exam_points/01.md": ["src-demo-memory"],
-    "exam_points/02.md": ["src-demo-feedback"]
-  },
+  "sources": [],
+  "mappings": {},
   "unmapped_sources": [],
   "uncertain_mappings": {}
 }
