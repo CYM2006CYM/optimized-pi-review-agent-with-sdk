@@ -17,7 +17,7 @@ Pi Study Helper 是一款基于 [pi](https://pi.dev) 和 [Loop Graph SDK](https:
 一条命令即可：
 
 ```bash
-pi install git:github.com/0liveiraaa/pi-study-helper
+pi install git:github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk
 ```
 
 重启 pi 或执行 `/reload` 后生效。
@@ -42,7 +42,7 @@ pi install git:github.com/0liveiraaa/pi-study-helper
 
 ```bash
 # 1. 安装扩展
-pi install git:github.com/0liveiraaa/pi-study-helper
+pi install git:github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk
 # 重启 pi 或 /reload
 
 # 2. 开始学习

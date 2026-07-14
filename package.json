@@ -16,11 +16,11 @@
   "license": "MIT",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/0liveiraaa/pi-study-helper.git"
+    "url": "git+https://github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk.git"
   },
-  "homepage": "https://github.com/0liveiraaa/pi-study-helper#readme",
+  "homepage": "https://github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk#readme",
   "bugs": {
-    "url": "https://github.com/0liveiraaa/pi-study-helper/issues"
+    "url": "https://github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk/issues"
   },
   "engines": {
     "node": ">=22"
