@@ -96,6 +96,141 @@ pi install git:github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk
 
 首次加载会自动初始化 `demo-review` 示例资料包。执行 `/study` 即可选择资料包开始学习。
 
+## 上手体验
+
+下面的流程可以依次体验直接练习、卡片练习、章节学习、学习画像、资料包构建、修订与会话恢复。
+
+> PowerShell 命令在系统终端中执行；以 `/` 开头的命令需要进入 Pi 后执行。
+
+### 0. 确认扩展已加载
+
+从 GitHub 安装后，可在 PowerShell 中检查安装清单并启动 Pi：
+
+```powershell
+pi list
+pi --provider deepseek
+```
+
+如果正在仓库目录中进行本地开发，也可以安装本地版本：
+
+```powershell
+cd "C:\Users\win11\Desktop\头脑风暴\pi-study-helper"
+pi install .
+pi --provider deepseek
+```
+
+启动时应看到 `Pi Study Helper 已加载；使用 /study 开始学习`。如果看不到这条提示，请退出 Pi，重新执行安装命令后再启动。
+
+### 1. 直接做题
+
+在 Pi 中输入：
+
+```text
+/study demo-review
+```
+
+建议依次选择：
+
+1. 范围：第 1 章
+2. 学习方式：`练习 · 直接答题`
+3. 难度：`S-U · 基础理解`
+4. 题型：`单选题`
+
+答题后可以尝试“继续讨论这道题”，并输入：
+
+```text
+为什么其他选项不正确？请结合资料逐项解释。
+```
+
+随后可在学习功能菜单中体验“下一题”“提高难度”“查看当前目标材料”“查看当前学习总结”或“结束并保存总结”。
+
+### 2. 卡片练习
+
+再次输入：
+
+```text
+/study demo-review
+```
+
+建议选择第 1 章、`卡片练习 · 先回忆概念`、`主动回忆`卡片、`S-U · 基础理解`和`简答题`。看到卡片标题后先尝试自行回忆，再决定是否查看材料并开始答题。
+
+完成一题后选择“更换卡片/章节”，继续体验“间隔复习”或“交错练习”。
+
+### 3. 章节学习
+
+```text
+/study demo-review
+```
+
+建议选择第 2 章、`章节学习 · 结合章节材料`、任意小节、`M-U · 综合理解`和`判断题`。该模式会先展示章节内容，再根据当前材料生成题目。
+
+### 4. 生成学习画像
+
+完整结束一次学习会话后输入：
+
+```text
+/study-profile demo-review
+```
+
+选择要消费的学习记录，检查生成的画像，然后确认保存。建议先完成 3～5 道题，画像会更有参考价值。
+
+### 5. 从示例笔记构建资料包
+
+仓库内置了两篇用于体验构建流程的 Markdown 笔记。在 Pi 中输入：
+
+```text
+/study-build "C:\Users\win11\Desktop\头脑风暴\pi-study-helper\fixtures\source-materials\p4-smoke"
+```
+
+按提示填写：
+
+```text
+资料包 ID：my-learning-demo
+科目名称：我的学习方法练习
+```
+
+构建完成后选择启用 draft，然后开始学习新资料包：
+
+```text
+/study my-learning-demo
+```
+
+如果仓库位于其他目录，请把命令中的绝对路径替换为你本机的实际路径。你也可以将路径换成自己的 Markdown/TXT 笔记目录。
+
+### 6. 安全修订资料包
+
+```text
+/study-revise my-learning-demo
+```
+
+可以输入以下修订意见进行体验：
+
+```text
+为主动回忆补充一个大学期末复习场景，并增加一个常见误区。保留现有章节结构，不删除原内容。
+```
+
+Agent 会先生成计划和实际文件变更供确认。初次体验可先保留 draft；确认内容符合预期后，再启用修订版。启用时旧 active 会自动归档。
+
+### 7. 恢复未完成会话
+
+先通过 `/study demo-review` 开始一轮学习，完成至少一道题后退出 Pi。重新启动 Pi，然后输入：
+
+```text
+/study-recover
+```
+
+根据提示选择生成总结并结束，或将会话标记为中断。
+
+推荐按以下顺序完整体验：
+
+```text
+/study demo-review
+/study-profile demo-review
+/study-build "C:\Users\win11\Desktop\头脑风暴\pi-study-helper\fixtures\source-materials\p4-smoke"
+/study my-learning-demo
+/study-revise my-learning-demo
+```
+
 ## 项目结构
 
 ```
