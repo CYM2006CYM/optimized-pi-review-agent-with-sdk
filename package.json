@@ -46,7 +46,7 @@
     "probe:sdk-agent": "node scripts/run-sdk-agent-probe.mjs"
   },
   "dependencies": {
-    "pi-loop-graph-sdk": "github:0liveiraaa/pi-loop-graph-sdk#d9106b9"
+    "pi-loop-graph-sdk": "github:0liveiraaa/pi-loop-graph-sdk#ecb8d83"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
