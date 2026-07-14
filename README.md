@@ -28,6 +28,48 @@ pi install git:github.com/CYM2006CYM/optimized-pi-review-agent-with-sdk
 - Node.js `>=22`
 - 已配置的模型后端（OpenAI 兼容 API）
 
+## 配置 API Key（以 DeepSeek 为例）
+
+先在 DeepSeek 开放平台创建 API Key。请勿把真实 Key 写进项目文件、README 或提交到 GitHub。
+
+### 临时配置
+
+在 Windows PowerShell 中执行：
+
+```powershell
+$env:DEEPSEEK_API_KEY="你的 API Key"
+pi --provider deepseek
+```
+
+该设置只对当前 PowerShell 窗口有效，关闭窗口后失效，适合快速测试。
+
+### 永久配置（推荐）
+
+在 Windows PowerShell 中执行：
+
+```powershell
+[Environment]::SetEnvironmentVariable(
+  "DEEPSEEK_API_KEY",
+  "你的 API Key",
+  "User"
+)
+```
+
+执行后关闭并重新打开 PowerShell，让新的环境变量生效，然后启动 Pi：
+
+```powershell
+pi --provider deepseek
+```
+
+如果需要明确指定模型，可以先查看 Pi 当前支持的模型，再选择一个 DeepSeek 模型：
+
+```powershell
+pi --list-models deepseek
+pi --provider deepseek --model <模型 ID>
+```
+
+进入 Pi 后即可执行 `/study`。不建议通过 `pi --api-key "你的 API Key"` 长期使用 Key，因为命令可能被保存到终端历史中。
+
 ## 命令
 
 | 命令 | 说明 |
